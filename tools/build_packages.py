@@ -521,6 +521,42 @@ def build_devilgame(src, dst):
     insert_code(pp, 'DVPawn.DealHealthDamage', 0,
                 lambda reloc: cat(jump_if_not(3 + scaled.mem + scale_it.mem, scaled), scale_it))
 
+    # Enemies only attack while "on camera" (DVActionGraph_ConditionDef_InCameraView), and
+    # DVActionGraph_Context.IsOnCamera asks the AI for its relevant camera, which is player 1's.
+    # Enemies fighting player 2 off player 1's screen stood still. Also accept the camera of the
+    # player the enemy is fighting:
+    #   CamController = <original>;
+    #   if (CamController != None && CamController.IsPawnPartiallyInView(m_Pawn)) return true;
+    #   if (NTPlayerController(NTAIController(m_Pawn.m_Controller).m_CombatTargetPawn.Owner)
+    #         .GetRelevantCameraController().IsPawnPartiallyInView(m_Pawn)) return true;
+    #   return false;
+    from disasm import parse_function
+    fn = E('DVActionGraph_Context.IsOnCamera')
+    f = parse_function(pk, fn)
+    first = Code(f['script'][:43], 0x3F)                 # CamController = iface(...).GetRelevant...()
+    assert f['script'][43] == 0x07
+    cam = local(E('DVActionGraph_Context.IsOnCamera.CamController'))
+    pawn = inst(E('DVActionGraph_Context.m_Pawn'))
+    in_view_ret = find_import(pk, 'NTGameFramework.NTCam_CameraController.IsPawnPartiallyInView.ReturnValue')
+    in_view_fn = find_import(pk, 'NTGameFramework.NTCam_CameraController.IsPawnPartiallyInView')
+    in_view = lambda c: context(c, in_view_ret, final_call(in_view_fn, pawn))
+    field = lambda e, imp: context(e, imp, inst(imp))
+    ai = dyncast(find_import(pk, 'NTGameFramework.NTAIController'),
+                 field(pawn, find_import(pk, 'NTGameFramework.NTPawn.m_Controller')))
+    target = field(ai, find_import(pk, 'NTGameFramework.NTAIController.m_CombatTargetPawn'))
+    target_pc = dyncast(find_import(pk, 'NTGameFramework.NTPlayerController'),
+                        field(target, find_import(pk, 'Engine.Actor.Owner')))
+    target_cam = context(target_pc, find_import(pk, 'NTGameFramework.NTController_Interface.GetRelevantCameraController.ReturnValue'),
+                         virtual_call(pk, 'GetRelevantCameraController'))
+    pp.replace_export_data(fn, build_function(pp.export_data(fn), assemble([
+        first,
+        ('jump_if_not', 'theirs', andand(native(0x77, cam, NONE), in_view(cam))),
+        raw([0x04, 0x27]),
+        'theirs',
+        ('jump_if_not', 'no', in_view(target_cam)),
+        raw([0x04, 0x27]),
+        'no', raw([0x04, 0x28]), END])))
+
     # Enemy retargeting (NTGameFramework's NTAIController.ConsiderOtherAsBuddy, see there) runs
     # every frame from the AI controller's Tick:  final NTAIController.ConsiderOtherAsBuddy(None);
     append_to_function(pp, 'DVAIController.Tick',
