@@ -472,6 +472,15 @@ def build_devilgame(src, dst):
         cine_on, ('jump', 'done'),
         'leaving', regroup,
         'done'])
+
+    # DVPawn_Player.PostPossessed (from PostRestartPlayer, which our join spawn calls) re-points the
+    # game's single style system (DVGameInfo.m_StyleSystem: the combo/style rank meter) and secret
+    # mission manager at the new pawn. Style hits only count for StyleSystem.m_DVPawnOwner, so once
+    # player 2 joined only their hits registered. Player 2 skips straight to the upgrade import:
+    #   if (!(P1 != None && P1 != self)) { style system / secret missions }   (0x1fd: Profile = ...)
+    is_p2 = andand(native(0x77, final_call(get_p1), NONE), native(0x77, final_call(get_p1), tok(0x17)))
+    insert_code(pp, 'DVPawn_Player.PostPossessed', 0,
+                lambda reloc: jump_if_not(reloc(0x1FD), native(0x81, is_p2)))
     pp.save(dst)
     print('wrote', dst)
 
@@ -517,6 +526,22 @@ def build_ntgameframework(src, dst):
                    native(0x77, context(local(pc), m_nt_pawn, inst(m_nt_pawn)), final_call(get_p1)))
     insert_code(pp, 'NTGameInfo_SP.RestartPlayer', 0x70,
                 lambda reloc: jump_if_not(reloc(0x9E), native(0x81, is_p2)))
+
+    # Enemy AI only works against player 1: the native AI coordinator hands out attack permission
+    # (and builds its Havok avoidance obstacles) for NT_GetLocalPlayerPawn() only. Enemies still
+    # picked player 2 as their combat target, then circled forever waiting for an attack slot.
+    # So enemies don't treat player 2 as an enemy:
+    #   if (P1 != None && Other != P1 && NTPawn(Other).IsPlayerControlled()) return false;
+    other = pp.export_index('NTAIController.ConsiderOtherAsEnemy.Other')
+    ntpawn = pp.export_index('NTPawn')
+    is_pc = pp.export_index('NTPawn.IsPlayerControlled')
+    is_pc_ret = pp.export_index('NTPawn.IsPlayerControlled.ReturnValue')
+    friendly = andand(andand(native(0x77, final_call(get_p1), NONE),
+                             native(0x77, local(other), final_call(get_p1))),
+                      context(dyncast(ntpawn, local(other)), is_pc_ret, final_call(is_pc)))
+    ret_false = raw([0x04, 0x28])
+    insert_code(pp, 'NTAIController.ConsiderOtherAsEnemy', 0,
+                lambda reloc: cat(jump_if_not(3 + friendly.mem + ret_false.mem, friendly), ret_false))
     pp.save(dst)
     print('wrote', dst)
 

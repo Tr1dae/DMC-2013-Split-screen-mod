@@ -10,6 +10,7 @@ releases/
 # Runtime logs
 coop_log.txt
 coop_trace.txt
+coop_watch.txt
 
 # Build/tool artifacts
 __pycache__/
