@@ -9,8 +9,10 @@ own Dante and their own camera, in side-by-side or top/bottom split screen.
 ## Features
 
 - Player 2 joins mid-mission on the second controller and spawns beside player 1
-- Each controller drives its own Dante
-- Split screen, side by side by default, with a key to switch to top/bottom
+- Each controller drives its own character: player 2 plays as Vergil by default (or Dante)
+- Split screen, side by side by default, with a key to switch to top/bottom, or a shared camera
+- Enemies pick the nearest player and attack both; one shared health pool with a difficulty setting
+- "SplitScreen Mod" page in the pause menu for all settings
 - Cutscenes and QTEs automatically switch to one fullscreen view (built into the engine)
 - Single-player behaviour is unchanged until player 2 joins
 
@@ -75,9 +77,11 @@ is brought back next to player 1.
 - [x] Enemies fight both players: nearest-player targeting with a switch cooldown, attacks off camera
 - [x] Shared health pool (either player's damage and pickups), health multiplier setting
 - [ ] Player 2 not targeting player 1
-- [~] Player 2 as Kat or Vergil (pause menu): mesh retargeted onto Dante's skeleton by bone name. Vergil shares
-      Dante's full skeleton; Kat works but her fingertips and neck need skinning cleanup (DCC pass)
-- [ ] Repackage Kat's mesh into a small standalone package (today it is loaded from a level package)
+- [x] Player 2 plays as Vergil by default (pause menu: Vergil / Dante): his mesh is retargeted onto Dante's
+      skeleton, which it shares bone for bone
+- [ ] Kat as player 2: works through the same retarget but shares only 80 of Dante's bones, so her
+      fingertips and neck need skinning cleanup in a DCC app first
+- [ ] Repackage Vergil's / Kat's meshes into small standalone packages (today they load from level packages)
 
 ## How it works
 

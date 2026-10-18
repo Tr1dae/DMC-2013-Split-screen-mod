@@ -193,14 +193,14 @@ def build_engine(src, dst):
         set_cinematic(gp_pc(VC(), 1), True),
         'cine_end', RETURN_NOTHING,
         'not_cine',
-        # AddPlayer 300 / 301 / 302: player 2 is Dante / Kat / Vergil (the pause menu's Player 2
-        # option). Recorded now, applied by the regroup that runs when the menu closes (or at once if
-        # not paused).
+        # AddPlayer 300 / 301: player 2 is Dante / Vergil (the pause menu's Player 2 option).
+        # Recorded now, applied by the regroup that runs when the menu closes (or at once if not
+        # paused).
         ('jump_if_not', 'not_char', andand(native(0x99, local(cid), intconst(300)),
                                            native(OP_LESS_INT, local(cid), intconst(301 + len(CHARACTERS))))),
-        let(vc_prop('GameViewportClient.ProgressFadeTime'), floatconst(1.0)),             # Dante
+        let(vc_prop('GameViewportClient.ProgressFadeTime'), floatconst(DANTE_CHOICE)),    # Dante
     ] + sum(([('jump_if_not', 'char%d' % n, native(OP_EQ_INT, local(cid), intconst(301 + n))),
-              let(vc_prop('GameViewportClient.ProgressFadeTime'), floatconst(v)),
+              let(vc_prop('GameViewportClient.ProgressFadeTime'), floatconst(1.0 if v is None else v)),
               'char%d' % n] for n, (v, _, _) in enumerate(CHARACTERS)), []) + [
         'char_set',
         ('jump_if_not', 'char_now', paused()),
@@ -320,10 +320,13 @@ def build_engine(src, dst):
 
 
 # Player 2 characters other than Dante: (menu value, level package that carries the mesh, mesh).
-# The value is stored in GameViewportClient.ProgressFadeTime (see build_character_swap).
+# The value is stored in GameViewportClient.ProgressFadeTime (see build_character_swap); None marks
+# the default character, used for any value but DANTE_CHOICE. Player 2 is Vergil unless Dante is
+# picked in the pause menu. Kat (CH6_DomeWarehouse_DL / CH_kat_ingame.SkelMesh.sk_kat_ingame) also
+# worked but shares only 80 of Dante's bones; her fingertips and neck need skinning work first.
+DANTE_CHOICE = -1.0
 CHARACTERS = [
-    (-2.0, 'CH6_DomeWarehouse_DL.TheWorld', 'CH_kat_ingame.SkelMesh.sk_kat_ingame'),               # Kat
-    (-3.0, 'CH16_Skybridge1_LasersOFF_CS.TheWorld', 'CH_vergil_ingame.SkelMesh.sk_vergil_ingame'),  # Vergil
+    (None, 'CH16_Skybridge1_LasersOFF_CS.TheWorld', 'CH_vergil_ingame.SkelMesh.sk_vergil_ingame'),  # Vergil
 ]
 
 
@@ -331,16 +334,15 @@ def build_character_swap(pp, E, VC, gp, gp_pc, Outer):
     """Player 2 as another character: CheatManager.ViewClass (an unused debug cheat) becomes the
     "apply player 2's character" routine that AddPlayer runs on every regroup and join.
 
-    Kat's and Vergil's in-game meshes only exist inside level packages, so we load the smallest
-    level that carries the chosen one, then give player 2's pawn a second SkeletalMeshComponent
-    showing it, driven by Dante's animated mesh through SetParentAnimComponent (bones are matched by
-    name: Vergil shares all 167 of Dante's bones; Kat shares 80, and the rest keep their reference
-    pose). Dante's mesh stays as the invisible animation driver, so combat, sockets and hit boxes are
+    Vergil's in-game mesh only exists inside level packages, so we load the smallest level that
+    carries it, then give player 2's pawn a second SkeletalMeshComponent showing it, driven by
+    Dante's animated mesh through SetParentAnimComponent (bones are matched by name; Vergil shares
+    all 167 of Dante's bones). Dante's mesh stays as the invisible animation driver, so combat, sockets and hit boxes are
     unchanged.
 
     The choice lives in GameViewportClient.ProgressFadeTime (the viewport client outlives level
-    loads; the field only fades engine progress messages, which DmC never shows): a CHARACTERS value,
-    anything else means Dante. Locals: Other = player 2's pawn, first = component iterator,
+    loads; the field only fades engine progress messages, which DmC never shows): DANTE_CHOICE means
+    Dante, a CHARACTERS value that character, anything else the default (None) character. Locals: Other = player 2's pawn, first = component iterator,
     aClass = the added component, CheatManager.DebugCameraControllerRef = Dante's mesh (scratch)."""
     pk = pp.pkg
     fn = E('CheatManager.ViewClass')
@@ -356,7 +358,8 @@ def build_character_swap(pp, E, VC, gp, gp_pc, Outer):
     mesh_p, parent_p = E('SkeletalMeshComponent.SkeletalMesh'), E('SkeletalMeshComponent.ParentAnimComponent')
     choice = lambda: f(VC(), E('GameViewportClient.ProgressFadeTime'))
     # Abs(choice - v) < 0.25   (native 186 = Abs, 175 = float -, 176 = float <)
-    is_choice = lambda v: native(0xB0, native(0xBA, native(0xAF, choice(), floatconst(v))), floatconst(0.25))
+    near = lambda v: native(0xB0, native(0xBA, native(0xAF, choice(), floatconst(v))), floatconst(0.25))
+    is_choice = lambda v: native(OP_NOT_BOOL, near(DANTE_CHOICE)) if v is None else near(v)
     is_dante = native(OP_EQ_INT,                                  # InStr(string(Mesh.Name), "sk_dante") == 0
                       native(0x7E, cat(raw([0x38, 0x57]), f(f(it, mesh_p), NameP)), strconst('sk_dante')),
                       tok(0x25))
