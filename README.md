@@ -71,10 +71,12 @@ is brought back next to player 1.
 - [x] Second local player with their own camera and controller
 - [x] Drop player 2 / single-screen mode for platforming and QTE sections
 - [x] Shared camera mode, with both players on one screen
-- [~] In-game "SplitScreen Mod" settings menu in the pause screen (first version)
+- [x] In-game "SplitScreen Mod" settings menu in the pause screen (split, camera, health, player 2 character)
+- [x] Enemies fight both players: nearest-player targeting with a switch cooldown, attacks off camera
+- [x] Shared health pool (either player's damage and pickups), health multiplier setting
 - [ ] Player 2 not targeting player 1
-- [ ] Shared HUD, health and death rules
-- [ ] Distinct character models for player 2
+- [~] Kat as player 2: her mesh retargeted onto Dante's skeleton by bone name (first version, untested)
+- [ ] Repackage Kat's mesh into a small standalone package (today it is loaded from a level package)
 
 ## How it works
 

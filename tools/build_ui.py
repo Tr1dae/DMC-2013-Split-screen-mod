@@ -9,6 +9,7 @@ the class's DoInitAction that wraps Hook_InitAsMainGame and attaches extra CLIK 
       Split Screen: On/Off           -> ExecConsoleCommand "AddPlayer 1" / "RemovePlayer"
       Camera: Side by Side / Top & Bottom / Shared Screen -> "AddPlayer 10<view>"
       Health: 1x / 0.75x / 0.5x / 0.25x  -> "DamageScale <1 / 1.333 / 2 / 4>" (shared health pool)
+      Player 2: Dante / Kat              -> "AddPlayer 300 / 301" (applied when the menu closes)
       Back
   * The buttons call the game's own ExecConsoleCommand UI callback
     (DVGFxMovieHandler_IngameUI_Callbacks), which runs a console command on player 1. Joining or
@@ -57,7 +58,8 @@ def console(cmd):
 def menu_code():
     stock = ['button0%d' % i for i in range(1, 8)]
     coop = [('coopB0', 61, 'onCoopMenu'), ('coopB1', 62, 'onCoopSplit'),
-            ('coopB2', 63, 'onCoopCamera'), ('coopB4', 64, 'onCoopHealth'), ('coopB3', 65, 'onCoopBack')]
+            ('coopB2', 63, 'onCoopCamera'), ('coopB4', 64, 'onCoopHealth'), ('coopB5', 65, 'onCoopCharacter'),
+            ('coopB3', 66, 'onCoopBack')]
 
     setup = set_reg(R_PM, pm())
     setup += if_not(eq(member(val(R_PM), 'coopB0'), val(UNDEFINED)), 'have')
@@ -83,6 +85,9 @@ def menu_code():
     setup += if_not(eq(glob('coopHealth'), val(UNDEFINED)), 'healthset')
     setup += set_member(var('_global'), 'coopHealth', 0)
     setup += label('healthset')
+    setup += if_not(eq(glob('coopChar'), val(UNDEFINED)), 'charset')
+    setup += set_member(var('_global'), 'coopChar', 0)
+    setup += label('charset')
     setup += stmt(call_method(val(THIS), 'coopShow', False, False))
 
     labels = set_reg(R_PM, pm())
@@ -101,6 +106,10 @@ def menu_code():
         labels += set_member(member(val(R_PM), 'coopB4'), 'label', 'Health: ' + name) + jump('hdone')
         labels += label('h%d' % i)
     labels += label('hdone')
+    labels += if_not(eq(glob('coopChar'), val(1)), 'cdante')
+    labels += set_member(member(val(R_PM), 'coopB5'), 'label', 'Player 2: Kat') + jump('cpdone')
+    labels += label('cdante') + set_member(member(val(R_PM), 'coopB5'), 'label', 'Player 2: Dante')
+    labels += label('cpdone')
 
     sound = stmt(call_method(val(THIS), 'PlayForwardSound'))
     view_cmd = add(val('AddPlayer 10'), glob('coopView'))          # "AddPlayer 102" etc.
@@ -132,6 +141,12 @@ def menu_code():
     health += set_member(var('_global'), 'coopHealth', 0) + console('DamageScale 1')
     health += label('cdone') + stmt(call_method(val(THIS), 'coopLabels'))
 
+    # Player 2 character toggles Dante / Kat; the game side applies it when the menu closes.
+    character = sound + if_not(eq(glob('coopChar'), val(1)), 'tokat')
+    character += set_member(var('_global'), 'coopChar', 0) + console('AddPlayer 300') + jump('chdone')
+    character += label('tokat') + set_member(var('_global'), 'coopChar', 1) + console('AddPlayer 301')
+    character += label('chdone') + stmt(call_method(val(THIS), 'coopLabels'))
+
     def show_body():
         # coopShow(on = r2, focus = r3); r4 = PauseMenu
         pmr = Reg(4)
@@ -161,6 +176,7 @@ def menu_code():
     code += method('onCoopSplit', ['event'], split)
     code += method('onCoopCamera', ['event'], camera)
     code += method('onCoopHealth', ['event'], health)
+    code += method('onCoopCharacter', ['event'], character)
     # B / Esc / Start on the SplitScreen Mod page goes back to the pause page instead of resuming.
     code += set_member(proto(), 'coopOrigBack', member(proto(), 'BackButtonPressed'))
     code += method('BackButtonPressed', [],

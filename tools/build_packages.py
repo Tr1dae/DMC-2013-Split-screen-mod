@@ -158,6 +158,7 @@ def build_engine(src, dst):
     marker_cine = eat_return(E('PlayerController.GetSplitscreenPlayerCount.ReturnValue'),
                              context(inst(Outer), E('PlayerController.GetSplitscreenPlayerCount.ReturnValue'),
                                      virtual_call(pk, 'GetSplitscreenPlayerCount')))
+    apply_character = virtual_call(pk, 'ViewClass', NONE)      # see build_character_swap
     script = assemble([
         # AddPlayer 200: regroup only - bring player 2 (if any) next to player 1, never create.
         # DevilGame runs this after every pause/popup closes and every cutscene ends.
@@ -182,6 +183,7 @@ def build_engine(src, dst):
         'regroup_free',
         set_cinematic(gp_pc(VC(), 1), False),
         console(gp_pc(VC(), 1), 'Teleport'),
+        apply_character,
         'regroup_end', RETURN_NOTHING,
         'not_regroup',
         # AddPlayer 201: player 1 entered a cutscene - put player 2 in cinematic mode too (hidden,
@@ -191,6 +193,19 @@ def build_engine(src, dst):
         set_cinematic(gp_pc(VC(), 1), True),
         'cine_end', RETURN_NOTHING,
         'not_cine',
+        # AddPlayer 300 / 301: player 2 is Dante / Kat (the pause menu's Player 2 option). Recorded
+        # now, applied by the regroup that runs when the menu closes (or at once if not paused).
+        ('jump_if_not', 'not_char', andand(native(0x99, local(cid), cat(raw([0x1D]), raw(struct.pack('<i', 300)))),
+                                           native(OP_LESS_INT, local(cid), cat(raw([0x1D]), raw(struct.pack('<i', 302)))))),
+        ('jump_if_not', 'char_dante', native(OP_EQ_INT, local(cid), cat(raw([0x1D]), raw(struct.pack('<i', 301))))),
+        let(vc_prop('GameViewportClient.ProgressFadeTime'), floatconst(CHARACTER_KAT)), ('jump', 'char_set'),
+        'char_dante',
+        let(vc_prop('GameViewportClient.ProgressFadeTime'), floatconst(1.0)),
+        'char_set',
+        ('jump_if_not', 'char_now', paused()),
+        RETURN_NOTHING,
+        'char_now', apply_character, RETURN_NOTHING,
+        'not_char',
         # AddPlayer 100+n: set the split view directly (the pause menu's Camera option):
         # 101 top/bottom, 102 side by side, 106 shared screen. While paused it is queued.
         ('jump_if_not', 'not_view', native(0x99, local(cid), raw([0x2C, 100]))),          # >=
@@ -218,6 +233,7 @@ def build_engine(src, dst):
         console(new_pc(), 'Teleport'),
         face_pc,
         layout(),
+        apply_character,
         RETURN_NOTHING, END])
     repurpose_cheat(pp, 'SetOnlineDebugLevel', 'AddPlayer', script)
 
@@ -291,6 +307,7 @@ def build_engine(src, dst):
 
     build_shared_camera(pp, E, OuterImp, GamePlayers, LocalPlayerCls, ViewportClient, Player,
                         PawnP, LocationP, ActorP)
+    build_character_swap(pp, E, VC, gp, gp_pc, OuterImp)
 
     # Side-by-side by default.
     n = pk.names.index
@@ -299,6 +316,99 @@ def build_engine(src, dst):
                          struct.pack('<iiii', n('ESplitScreenType'), 0, n('eSST_2P_VERTICAL'), 0))
     pp.save(dst)
     print('wrote', dst)
+
+
+KAT_LEVEL = 'CH6_DomeWarehouse_DL.TheWorld'          # smallest level package carrying Kat's mesh
+KAT_MESH = 'CH_kat_ingame.SkelMesh.sk_kat_ingame'
+CHARACTER_KAT = -2.0      # GameViewportClient.ProgressFadeTime value meaning "player 2 is Kat"
+
+
+def build_character_swap(pp, E, VC, gp, gp_pc, Outer):
+    """Player 2 as Kat: CheatManager.ViewClass (an unused debug cheat) becomes the "apply player 2's
+    character" routine that AddPlayer runs on every regroup and join.
+
+    Kat's skeletal mesh only exists inside level packages, so we load the smallest one that carries
+    it, then give player 2's pawn a second SkeletalMeshComponent showing Kat, driven by Dante's
+    animated mesh through SetParentAnimComponent (bones are matched by name; Kat bones Dante lacks
+    keep their reference pose). Dante's mesh stays as the invisible animation driver, so combat,
+    sockets and hit boxes are unchanged.
+
+    The choice lives in GameViewportClient.ProgressFadeTime (the viewport client outlives level
+    loads; the field only fades engine progress messages, which DmC never shows): CHARACTER_KAT
+    means Kat, anything else Dante. Locals: Other = player 2's pawn, first = component iterator,
+    aClass = Kat's component, CheatManager.DebugCameraControllerRef = Dante's mesh (scratch)."""
+    pk = pp.pkg
+    fn = E('CheatManager.ViewClass')
+    k_comp, pawn, it = (local(E('CheatManager.ViewClass.' + n)) for n in ('aClass', 'Other', 'first'))
+    dante = inst(E('CheatManager.DebugCameraControllerRef'))
+    actor_cls, smc_cls = E('Actor'), E('SkeletalMeshComponent')
+    get_p1 = E('Actor.NT_GetLocalPlayerPawn')
+    p1 = lambda: static_call(actor_cls, 0, final_call(get_p1))
+    ClassP, OwnerP, NameP = find_import(pk, 'Core.Object.Class'), E('Actor.Owner'), find_import(pk, 'Core.Object.Name')
+    f = lambda e, p: context(e, p, inst(p))
+    load = find_import(pk, 'Core.Object.DynamicLoadObject')
+    kat_mesh = lambda: final_call(load, strconst(KAT_MESH), objconst(E('SkeletalMesh')), TRUE)
+    mesh_p, parent_p = E('SkeletalMeshComponent.SkeletalMesh'), E('SkeletalMeshComponent.ParentAnimComponent')
+    want_kat = native(0xB0, f(VC(), E('GameViewportClient.ProgressFadeTime')), floatconst(-1.0))   # float <
+    is_dante = native(OP_EQ_INT,                                  # InStr(string(Mesh.Name), "sk_dante") == 0
+                      native(0x7E, cat(raw([0x38, 0x57]), f(f(it, mesh_p), NameP)), strconst('sk_dante')),
+                      tok(0x25))
+    call = lambda obj, fn_name, *args: context(obj, 0, final_call(E(fn_name), *args))
+    vcall = lambda obj, name, *args: context(obj, 0, virtual_call(pk, name, *args))
+    update_skel = E('SkeletalMeshComponent.bUpdateSkelWhenNotRendered')
+    script = assemble([
+        ('jump_if_not', 'done', native(OP_GREATER_INT, cat(tok(0x36), gp(VC())), tok(0x26))),     # 2+ players
+        ('jump_if_not', 'done', native(0x77, p1(), NONE)),
+        # Player 2's pawn: owned by their controller, same class as player 1's.
+        ('foreach', 'no_pawn', context(inst(Outer), 0, native_ext(313, objconst(actor_cls), pawn, EMPTY))),
+        ('jump_if_not', 'next_actor', andand(native(OP_EQ_OBJ, f(pawn, OwnerP), gp_pc(VC(), 1)),
+                                             native(OP_EQ_OBJ, f(pawn, ClassP), f(p1(), ClassP)))),
+        ITER_POP, ('jump', 'have_pawn'),
+        'next_actor', ITER_NEXT,
+        'no_pawn', ITER_POP, ('jump', 'done'),
+        'have_pawn',
+        ('jump_if_not', 'loaded', want_kat),
+        final_call(load, strconst(KAT_LEVEL), objconst(find_import(pk, 'Core.Object')), TRUE),
+        'loaded',
+        # Find Kat's component (if we added it before) and Dante's own mesh.
+        let(k_comp, NONE), let(dante, NONE),
+        ('foreach', 'scanned', context(pawn, 0, final_call(E('Actor.ComponentList'), objconst(smc_cls), it))),
+        ('jump_if_not', 'not_kat', andand(native(0x77, f(it, mesh_p), NONE),
+                                          native(OP_EQ_OBJ, f(it, mesh_p), kat_mesh()))),
+        let(k_comp, it), ('jump', 'next_comp'),
+        'not_kat',
+        ('jump_if_not', 'next_comp', andand(andand(native(0x77, f(it, mesh_p), NONE),
+                                                   native(OP_EQ_OBJ, f(it, parent_p), NONE)), is_dante)),
+        let(dante, it),
+        'next_comp', ITER_NEXT,
+        'scanned', ITER_POP,
+        ('jump_if_not', 'clear', native(0x77, dante, NONE)),
+        ('jump_if_not', 'to_dante', want_kat),
+        # Kat: add her component once, driven by Dante's mesh, then hide Dante's.
+        ('jump_if_not', 'show_kat', andand(native(OP_EQ_OBJ, k_comp, NONE), native(0x77, kat_mesh(), NONE))),
+        let(k_comp, cat(tok(0x11), pawn, tok(0x0B), tok(0x0B), objconst(smc_cls), tok(0x0B))),   # new(P) class
+        call(k_comp, 'SkeletalMeshComponent.SetSkeletalMesh', kat_mesh(), EMPTY),
+        call(k_comp, 'SkeletalMeshComponent.SetParentAnimComponent', dante),
+        call(k_comp, 'PrimitiveComponent.SetLightEnvironment', f(dante, E('PrimitiveComponent.LightEnvironment'))),
+        vcall(k_comp, 'SetTranslation', f(dante, E('PrimitiveComponent.Translation'))),
+        vcall(k_comp, 'SetRotation', f(dante, E('PrimitiveComponent.Rotation'))),
+        vcall(k_comp, 'SetScale', f(dante, E('PrimitiveComponent.Scale'))),
+        vcall(k_comp, 'SetScale3D', f(dante, E('PrimitiveComponent.Scale3D'))),
+        call(pawn, 'Actor.AttachComponent', k_comp),
+        'show_kat',
+        ('jump_if_not', 'clear', native(0x77, k_comp, NONE)),
+        cat(tok(0x14), context(dante, update_skel, boolvar(inst(update_skel))), TRUE),   # keep animating
+        call(dante, 'PrimitiveComponent.SetHidden', TRUE),
+        ('jump', 'clear'),
+        'to_dante',
+        ('jump_if_not', 'unhide', native(0x77, k_comp, NONE)),
+        call(pawn, 'Actor.DetachComponent', k_comp),
+        'unhide',
+        call(dante, 'PrimitiveComponent.SetHidden', tok(0x28)),
+        'clear',
+        let(dante, NONE), let(k_comp, NONE),
+        'done', RETURN_NOTHING, END])
+    pp.replace_export_data(fn, build_function(pp.export_data(fn), script))
 
 
 SHARED_CAMERA_PULLBACK = 0.6   # extra camera distance per unit of distance between the players
