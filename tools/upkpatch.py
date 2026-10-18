@@ -199,3 +199,27 @@ def build_function(original, script, flags=None, friendly=None):
         fpos = 7 + (2 if fl & 0x40 else 0)
         struct.pack_into('<ii', tail, fpos, *friendly)
     return bytes(hdr) + script.disk + bytes(tail)
+
+
+def insert_code(pp, path, at_mem, make_code):
+    """Insert bytecode before the statement at memory offset `at_mem` of function `path`, shifting
+    every absolute jump target that lies after it. `make_code(reloc)` builds the new Code; `reloc(m)`
+    maps an original memory offset to its new one (for jumps inside the inserted code)."""
+    from disasm import parse_function, Disasm
+    fn = pp.export_index(path)
+    f = parse_function(pp.pkg, fn)
+    d = Disasm(pp.pkg, f['script']); d.run()
+    starts = dict(d.stmts)
+    assert at_mem in starts, 'not a statement start: %#x' % at_mem
+    probe = make_code(lambda m: m)
+    delta = probe.mem
+    reloc = lambda m: m + delta if m > at_mem else m
+    new = make_code(reloc)
+    assert new.mem == delta
+    script = bytearray(f['script'])
+    for pos in d.jumps:
+        v, = struct.unpack_from('<H', script, pos)
+        struct.pack_into('<H', script, pos, reloc(v))
+    at_disk = starts[at_mem]
+    script[at_disk:at_disk] = new.disk
+    pp.replace_export_data(fn, build_function(pp.export_data(fn), Code(bytes(script), f['bsize'] + delta)))

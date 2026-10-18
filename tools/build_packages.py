@@ -503,6 +503,20 @@ def build_ntgameframework(src, dst):
     guard = cat(jump_if_not(guard_len, cond), RETURN_NOTHING)
     # Shift every original statement by guard_len; the function is straight-line (no jump targets).
     pp.replace_export_data(fn, build_function(pp.export_data(fn), guard + Code(f['script'], f['bsize'])))
+
+    # NTGameInfo_SP.RestartPlayer begins with NTAIServiceProvider.Get().ClearCoordinator(), a reset
+    # meant for player 1's checkpoint restarts. When player 2 joins (we spawn them through this
+    # function) it wiped the enemy AI coordinator under a live fight: enemies stopped attacking
+    # player 1, and spawning player 2 inside an arena crashed in
+    # ADVAICoordinator::execSetParticipantAction. Skip it for anyone but player 1:
+    #   if (!(NT_GetLocalPlayerPawn() != None && PC.m_NTPawn != NT_GetLocalPlayerPawn())) { clear }
+    #   0070: if (Services != None) / 007f: Services.ClearCoordinator() / 009e: next statement
+    pc = pp.export_index('NTGameInfo_SP.RestartPlayer.PC')
+    m_nt_pawn = pp.export_index('NTPlayerController.m_NTPawn')
+    is_p2 = andand(native(0x77, final_call(get_p1), NONE),
+                   native(0x77, context(local(pc), m_nt_pawn, inst(m_nt_pawn)), final_call(get_p1)))
+    insert_code(pp, 'NTGameInfo_SP.RestartPlayer', 0x70,
+                lambda reloc: jump_if_not(reloc(0x9E), native(0x81, is_p2)))
     pp.save(dst)
     print('wrote', dst)
 

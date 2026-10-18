@@ -42,9 +42,15 @@ class Disasm:
     def __init__(s, pk, script):
         s.pk, s.b, s.p, s.mem = pk, script, 0, 0
         s.lines = []
+        s.jumps = []        # disk offsets of absolute jump-target operands (u16, memory offsets)
+        s.stmts = []        # (memory offset, disk offset) of each top-level statement
 
     def u8(s):
         v = s.b[s.p]; s.p += 1; s.mem += 1; return v
+
+    def target(s):
+        s.jumps.append(s.p)
+        return s.u16()
 
     def u16(s):
         v, = struct.unpack_from('<H', s.b, s.p); s.p += 2; s.mem += 2; return v
@@ -93,12 +99,13 @@ class Disasm:
         if t == 0x04: return 'return ' + s.expr()
         if t == 0x05:
             o = s.obj(); sz = s.u8(); return 'switch(%s) [%s,%d]' % (s.expr(), o, sz)
-        if t == 0x06: return 'jump 0x%x' % s.u16()
-        if t == 0x07: off = s.u16(); return 'if !(%s) jump 0x%x' % (s.expr(), off)
+        if t == 0x06: return 'jump 0x%x' % s.target()
+        if t == 0x07: off = s.target(); return 'if !(%s) jump 0x%x' % (s.expr(), off)
         if t == 0x08: return 'stop'
         if t == 0x09: ln = s.u16(); s.u8(); return 'assert(%s) line %d' % (s.expr(), ln)
         if t == 0x0A:
-            off = s.u16()
+            pos = s.p; off = s.u16()
+            if off != 0xFFFF: s.jumps.append(pos)
             return 'default: (next 0x%x)' % off if off == 0xFFFF else 'case %s: (next 0x%x)' % (s.expr(), off)
         if t == 0x0B: return 'nothing'
         if t == 0x0D: return 'goto ' + s.expr()
@@ -135,7 +142,7 @@ class Disasm:
         if t == 0x2C: return str(s.u8())
         if t == 0x2D: return 'bool(%s)' % s.expr()
         if t == 0x2E: o = s.obj(); return '%s(%s)' % (o, s.expr())
-        if t == 0x2F: a = s.expr(); off = s.u16(); return 'foreach %s (end 0x%x)' % (a, off)
+        if t == 0x2F: a = s.expr(); off = s.target(); return 'foreach %s (end 0x%x)' % (a, off)
         if t == 0x30: return 'iteratorpop'
         if t == 0x31: return 'iteratornext'
         if t in (0x32, 0x33):
@@ -174,15 +181,16 @@ class Disasm:
         if t == 0x56: a = s.expr(); s.u16(); return '%s.RemoveItem(%s)' % (a, ', '.join(s.params()))
         if t == 0x57: a = s.expr(); s.u16(); return '%s.InsertItem(%s)' % (a, ', '.join(s.params()))
         if t == 0x58:
-            a = s.expr(); it = s.expr(); hasidx = s.u8(); ix = s.expr(); off = s.u16()
+            a = s.expr(); it = s.expr(); hasidx = s.u8(); ix = s.expr(); off = s.target()
             return 'foreach %s(%s, %s) (end 0x%x)' % (a, it, ix, off)
         if t == 0x59: a = s.expr(); s.u16(); return '%s.Sort(%s)' % (a, ', '.join(s.params()))
-        if t == 0x5A: return 'filtereditoronly 0x%x' % s.u16()
+        if t == 0x5A: return 'filtereditoronly 0x%x' % s.target()
         raise ValueError('unknown token 0x%02x at disk 0x%x' % (t, s.p - 1))
 
     def run(s):
         while s.p < len(s.b):
             m = s.mem; p0 = s.p
+            s.stmts.append((m, p0))
             try:
                 txt = s.expr()
                 if getattr(s, 'hexdump', False):

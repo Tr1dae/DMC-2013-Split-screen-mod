@@ -40,6 +40,13 @@ works around the places where DmC and QLOC's PC port assume a single player.
   - calls `NTGameInfo_SP.RestartPlayer` directly. The `DVGameInfo` override would repoint
     `m_PlayerPawn`, the pickup system and upgrades at the new player.
   - calls `PostRestartPlayer`
+- `NTGameInfo_SP.RestartPlayer` starts with `NTAIServiceProvider.Get().ClearCoordinator()`, a reset
+  meant for player 1's checkpoint restarts. Running it for player 2's join had two effects:
+  - It wiped the enemy AI coordinator under a live fight, so enemies stopped attacking player 1.
+  - Spawning or teleporting player 2 into an arena crashed in
+    `ADVAICoordinator::execSetParticipantAction`.
+- The fix inserts a guard: skip it unless the controller is player 1. It's added with
+  `upkpatch.insert_code`, which relocates every absolute jump in the function.
 - The pawn spawns at the checkpoint's start point, where player 1 usually still stands. That is why
   the spawn ignores collision.
 - DmC players own their body through `NTPlayerController.m_NTPawn`. `NTPossess` never calls the
