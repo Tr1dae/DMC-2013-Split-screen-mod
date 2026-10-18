@@ -140,6 +140,16 @@ def build_engine(src, dst):
     world = context(inst(Outer), E('Actor.WorldInfo'), inst(E('Actor.WorldInfo')))
     paused = lambda: native(0x77, context(world, E('WorldInfo.Pauser'), inst(E('WorldInfo.Pauser'))), NONE)
     str_eq = lambda a, s: native(0x7A, a, strconst(s))                                   # string ==
+    pending_view = inst(E('CheatManager.OwnCamera'))   # queued "AddPlayer 10x" (also a debug-only message)
+    bCine = E('PlayerController.bCinematicMode')
+
+    def console_expr(pc, cmd_expr):
+        return eat_return(CCRet, context(pc, CCRet, virtual_call(pk, 'ConsoleCommand', cmd_expr, EMPTY)))
+
+    def set_cinematic(pc, on):
+        # SetCinematicMode(bInCinematicMode, bHidePlayer, bAffectsHUD=false, Movement, Turning, Buttons)
+        b = TRUE if on else tok(0x28)
+        return context(pc, 0, virtual_call(pk, 'SetCinematicMode', b, b, tok(0x28), TRUE, TRUE, TRUE))
     script = assemble([
         # AddPlayer 200: regroup only - bring player 2 (if any) next to player 1, never create.
         # DevilGame runs this after every pause/popup closes and every cutscene ends.
@@ -151,13 +161,31 @@ def build_engine(src, dst):
         ('jump_if_not', 'no_drop', str_eq(pending, 'drop')),
         let(pending, strconst('')), console(inst(Outer), 'RemovePlayer'),
         'no_drop',
+        ('jump_if_not', 'no_view', native(0x7B, pending_view, strconst(''))),             # string !=
+        console_expr(inst(Outer), pending_view), let(pending_view, strconst('')),
+        'no_view',
+        # Player 2 follows player 1 out of a cutscene (unless player 1 is still in one, e.g. paused
+        # mid-cutscene), then regroups.
         ('jump_if_not', 'regroup_end', native(OP_GREATER_INT, cat(tok(0x36), gp(VC())), tok(0x26))),
+        ('jump_if_not', 'regroup_end', native(OP_NOT_BOOL, boolvar(context(inst(Outer), bCine, inst(bCine))))),
+        set_cinematic(gp_pc(VC(), 1), False),
         console(gp_pc(VC(), 1), 'Teleport'),
         'regroup_end', RETURN_NOTHING,
         'not_regroup',
+        # AddPlayer 201: player 1 entered a cutscene - put player 2 in cinematic mode too (hidden,
+        # no input; the engine already shows player 1 fullscreen while it is in cinematic mode).
+        ('jump_if_not', 'not_cine', native(OP_EQ_INT, local(cid), raw([0x2C, 201]))),
+        ('jump_if_not', 'cine_end', native(OP_GREATER_INT, cat(tok(0x36), gp(VC())), tok(0x26))),
+        set_cinematic(gp_pc(VC(), 1), True),
+        'cine_end', RETURN_NOTHING,
+        'not_cine',
         # AddPlayer 100+n: set the split view directly (the pause menu's Camera option):
-        # 101 top/bottom, 102 side by side, 106 shared screen.
+        # 101 top/bottom, 102 side by side, 106 shared screen. While paused it is queued.
         ('jump_if_not', 'not_view', native(0x99, local(cid), raw([0x2C, 100]))),          # >=
+        ('jump_if_not', 'view_now', paused()),
+        let(pending_view, native(0x70, strconst('AddPlayer '), cat(raw([0x38, 0x53]), local(cid)))),  # $ string(cid)
+        RETURN_NOTHING,
+        'view_now',
         let(desired(), cat(raw([0x38, 0x3D]), native(0x93, local(cid), raw([0x2C, 100])))),   # byte(cid - 100)
         layout(), RETURN_NOTHING,
         'not_view',
@@ -432,9 +460,18 @@ def build_devilgame(src, dst):
     cc_ret = find_import(pk, 'Engine.PlayerController.ConsoleCommand.ReturnValue')
     regroup = eat_return(cc_ret, virtual_call(pk, 'ConsoleCommand', strconst('AddPlayer 200'), EMPTY))
     append_to_function(pp, 'DVPlayerController.ResumeGame', [regroup])
+    # Player 1 only (its pawn is NT_GetLocalPlayerPawn()): entering a cutscene puts player 2 in
+    # cinematic mode too (AddPlayer 201); leaving it restores and regroups player 2 (AddPlayer 200).
+    # Player 2's own SetCinematicMode calls must not trigger this, or it would recurse.
     in_cine = E('DVPlayerController.SetCinematicMode.bInCinematicMode')
-    append_to_function(pp, 'DVPlayerController.SetCinematicMode',
-                       [('jump_if_not', 'done', native(0x81, boolvar(local(in_cine)))), regroup, 'done'])
+    is_primary = native(0x72, inst(nt_pawn), static_call(actor_cls, 0, final_call(get_p1)))
+    cine_on = eat_return(cc_ret, virtual_call(pk, 'ConsoleCommand', strconst('AddPlayer 201'), EMPTY))
+    append_to_function(pp, 'DVPlayerController.SetCinematicMode', [
+        ('jump_if_not', 'done', is_primary),
+        ('jump_if_not', 'leaving', boolvar(local(in_cine))),
+        cine_on, ('jump', 'done'),
+        'leaving', regroup,
+        'done'])
     pp.save(dst)
     print('wrote', dst)
 
@@ -449,6 +486,23 @@ def build_ntgameframework(src, dst):
     fn = pp.export_index('NTGameInfo_SP.SpawnPlayerPawn')
     rot = struct.pack('<i', pp.export_index('NTGameInfo_SP.SpawnPlayerPawn.StartRotation'))
     pp.replace_in_export(fn, b'\x00' + rot + b'\x4a\x4a\x16', b'\x00' + rot + b'\x4a\x27\x16')
+
+    # NTPlayerController.InitGFxMovieHandler_IngameUI (from NTPossess -> InitUI) re-initializes the
+    # single shared in-game UI and sets its callbacks' m_pController = self. When player 2 spawns
+    # it steals that binding, so menus and popups opened by player 1 resume on player 2 and the
+    # world stays paused. Only the primary player (whose pawn NT_GetLocalPlayerPawn() returns)
+    # may bind it:   if (m_NTPawn != NT_GetLocalPlayerPawn()) return;   (function has no jumps)
+    from disasm import parse_function
+    pk = pp.pkg
+    fn = pp.export_index('NTPlayerController.InitGFxMovieHandler_IngameUI')
+    f = parse_function(pk, fn)
+    assert b'\x06' not in f['script'][:0] and f['bsize'] == 262, f['bsize']
+    get_p1 = find_import(pk, 'Engine.Actor.NT_GetLocalPlayerPawn')
+    cond = native(0x77, inst(pp.export_index('NTPlayerController.m_NTPawn')), final_call(get_p1))  # !=
+    guard_len = 3 + cond.mem + RETURN_NOTHING.mem
+    guard = cat(jump_if_not(guard_len, cond), RETURN_NOTHING)
+    # Shift every original statement by guard_len; the function is straight-line (no jump targets).
+    pp.replace_export_data(fn, build_function(pp.export_data(fn), guard + Code(f['script'], f['bsize'])))
     pp.save(dst)
     print('wrote', dst)
 

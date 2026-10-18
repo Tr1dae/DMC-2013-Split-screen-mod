@@ -46,10 +46,11 @@ your own copy of the game.
 | **F10** | Force-clear a stuck pause (if the game freezes after a popup) |
 
 In the ESC pause menu, **SplitScreen Mod** (below Main Menu) opens a settings page:
-**Split Screen: On/Off** adds or drops player 2 (applied when you resume), and **Camera** switches
-between side by side, top & bottom and shared screen. B/Back returns to the pause page.
+**Split Screen: On/Off** adds or drops player 2, and **Camera** switches between side by side,
+top & bottom and shared screen. Changes apply when you resume. B/Back returns to the pause page.
 
-Player 2 is brought back next to player 1 after every cutscene, pause and popup.
+During cutscenes player 2 is hidden and frozen. Afterwards, and after every pause or popup, player 2
+is brought back next to player 1.
 
 - Player 1 uses the first controller, plus keyboard and mouse.
 - Player 2 uses the second controller.
@@ -60,7 +61,7 @@ Player 2 is brought back next to player 1 after every cutscene, pause and popup.
 - Single-player systems still assume one Dante. Player 2 can lock on to and target player 1, and the
   HUD, checkpoints and death handling are player 1's.
 - The shared-screen camera can clip through walls when the players spread far apart, and player 2's stick directions follow player 2's own (hidden) camera.
-- A popup can occasionally leave the game frozen with two players. Press F10 to unfreeze it.
+- If the game ever stays frozen after a popup or menu, press F10 to unfreeze it.
 - Rumble and on-screen button prompts follow whichever controller was used last.
 - If player 1 uses the keyboard, controller buttons may pause for both players until a controller
   button is pressed.

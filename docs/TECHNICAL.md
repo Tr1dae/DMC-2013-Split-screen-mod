@@ -122,11 +122,21 @@ QLOC's PC port lets any pad drive player 1:
 
 ## Pauses and cutscenes
 
+- The game has one shared in-game UI movie. `NTPlayerController.InitGFxMovieHandler_IngameUI` runs on
+  every possess and sets the UI callbacks' `m_pController = self`, so player 2 stole it.
+  - Effect: popups and menus paused through player 1 but resumed through player 2, and player 1's
+    pause entry was never released, so the game froze.
+  - Fix (NTGameFramework): only the player whose pawn is `NT_GetLocalPlayerPawn()` may bind it.
+- Cutscenes: player 1's `DVPlayerController.SetCinematicMode(true)` runs `AddPlayer 201`, which
+  calls `SetCinematicMode(true, hide, HUD untouched, …)` on player 2. Leaving a cutscene runs
+  `AddPlayer 200`.
+
 - Joining while paused leaves the new pawn overlapping player 1 with nothing ticking, and the game
   locks up. So while `WorldInfo.Pauser != None`, `AddPlayer`/`RemovePlayer` only record "join" or
   "drop" in `CheatManager.ViewingFrom`, a localized string used only by the debug `ViewSelf` cheat.
-- `AddPlayer 200` carries out the recorded request and then regroups player 2 next to player 1 via
-  `Teleport`. `DVPlayerController.ResumeGame` and `DVPlayerController.SetCinematicMode(false)` run
+- View changes while paused are queued as a command string in `CheatManager.OwnCamera`.
+- `AddPlayer 200` carries out the recorded requests. If player 1 isn't in a cutscene, it then takes
+  player 2 out of cinematic mode and regroups them via `Teleport`. `DVPlayerController.ResumeGame` and `DVPlayerController.SetCinematicMode(false)` run
   it, so player 2 catches up after every pause, popup and cutscene.
 
 ## Diagnostics DLL (`native/`)
