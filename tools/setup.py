@@ -26,6 +26,8 @@ BINDINGS = [
     'Bindings=(Name="F7",\t\t\tCommand="SplitAxis")',
     '; CoopMod: F8 drops player 2 (single player view until F6)',
     'Bindings=(Name="F8",\t\t\tCommand="RemovePlayer")',
+    '; CoopMod: F10 force-clears a stuck pause',
+    'Bindings=(Name="F10",\t\t\tCommand="ClearPause")',
 ]
 
 

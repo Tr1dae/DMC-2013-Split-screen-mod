@@ -205,8 +205,14 @@ static const char *name_of_index(int idx, char *buf, int cap)
 
 static const char *obj_name(DWORD obj, char *buf, int cap)
 {
+    /* FName = index + instance number; number N > 0 displays as Name_(N-1), e.g. two
+       DVPlayerController_Dante actors are DVPlayerController_Dante_0 and _1. */
+    int num;
     if (!obj) { strcpy_s(buf, cap, "None"); return buf; }
-    return name_of_index((int)rd(obj + OBJ_NAME), buf, cap);
+    name_of_index((int)rd(obj + OBJ_NAME), buf, cap);
+    num = (int)rd(obj + OBJ_NAME + 4);
+    if (num > 0 && num < 100000) { size_t l = strlen(buf); sprintf_s(buf + l, cap - l, "_%d", num - 1); }
+    return buf;
 }
 
 static void find_name_layout(void)
@@ -264,6 +270,7 @@ static struct { const char *name; int max; int idx; } g_triggers[] = {
 };
 #define NTRIGGERS (sizeof g_triggers / sizeof g_triggers[0])
 static int g_triggerScanned, g_viewPointIdx = -1;
+static void find_watch_indices(void);
 
 static void find_trigger_index(void)
 {
@@ -276,6 +283,7 @@ static void find_trigger_index(void)
         for (t = 0; t < NTRIGGERS; t++) if (g_triggers[t].idx < 0 && !strcmp(buf, g_triggers[t].name)) g_triggers[t].idx = (int)i;
         if (g_viewPointIdx < 0 && !strcmp(buf, "GetPlayerViewPoint")) g_viewPointIdx = (int)i;
     }
+    find_watch_indices();
     for (t = 0; t < NTRIGGERS; t++) {
         sprintf_s(buf, sizeof buf, "tracer: trigger '%s' is name %d", g_triggers[t].name, g_triggers[t].idx);
         logline(buf);
@@ -302,6 +310,48 @@ static void maybe_start_trace(void *fn)
     }
 }
 
+/* ---- always-on watch log ----------------------------------------------------------------
+ * Every call to one of these functions is written to CoopMod/coop_watch.txt with the object it
+ * runs on and the script function that called it (FFrame: Node +0x10, Object +0x14).
+ */
+static const char *g_watchNames[] = { "SetPause", "ClearPause", "ConditionalPause", "PauseGame",
+    "ResumeGame", "Tut_ShowBox", "Tut_HideBox", "OnControllerChanged", "OnLostFocusPause",
+    "Handle_PausePressed", "DisplayGameMenu", "DisplayIngameDialog", "SetCinematicMode", 0 };
+static int g_watchIdx[32];
+static char g_watchPath[MAX_PATH];
+
+static void find_watch_indices(void)
+{
+    DWORD num = G(G_NAMES_NUM), i;
+    int w;
+    char buf[96];
+    for (w = 0; g_watchNames[w]; w++) g_watchIdx[w] = -1;
+    for (i = 0; i < num; i++) {
+        name_of_index((int)i, buf, sizeof buf);
+        for (w = 0; g_watchNames[w]; w++) if (g_watchIdx[w] < 0 && !strcmp(buf, g_watchNames[w])) g_watchIdx[w] = (int)i;
+    }
+}
+
+static void watch_call(const char *kind, DWORD self, DWORD fn, DWORD stack)
+{
+    char a[96], b[96], c[96], d[96], e[96], f[96];
+    int idx = (int)rd(fn + OBJ_NAME), w;
+    FILE *out;
+    SYSTEMTIME t;
+    for (w = 0; g_watchNames[w]; w++) if (g_watchIdx[w] == idx) break;
+    if (!g_watchNames[w] || fopen_s(&out, g_watchPath, "a") || !out) return;
+    GetLocalTime(&t);
+    obj_name(fn, a, sizeof a);
+    obj_name(rd(fn + OBJ_OUTER), b, sizeof b);
+    obj_name(self, c, sizeof c);
+    if (stack) { obj_name(rd(stack + 0x14), d, sizeof d); obj_name(rd(rd(stack + 0x10) + OBJ_OUTER), e, sizeof e);
+                 obj_name(rd(stack + 0x10), f, sizeof f); }
+    fprintf(out, "%02d:%02d:%02d.%03d %s %s.%s on %s", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds, kind, b, a, c);
+    if (stack) fprintf(out, "  <- %s.%s in %s", e, f, d);
+    fprintf(out, "\n");
+    fclose(out);
+}
+
 static void trace_viewpoint(DWORD self, DWORD fn, void *parms)
 {
     /* GetPlayerViewPoint(out vector out_Location, out rotator out_Rotation): show the result. */
@@ -318,6 +368,7 @@ static void trace_viewpoint(DWORD self, DWORD fn, void *parms)
 static void __fastcall hk_CallFunction(void *self, void *edx, void *stack, void *result, void *fn)
 {
     maybe_start_trace(fn);
+    if (g_triggerScanned) watch_call("CF", (DWORD)self, (DWORD)fn, (DWORD)stack);
     trace_call("CF", (DWORD)self, (DWORD)fn);
     g_depth++;
     g_origCF(self, edx, stack, result, fn);
@@ -329,6 +380,7 @@ static void __fastcall hk_CallFunction(void *self, void *edx, void *stack, void 
 static void __fastcall hk_ProcessEvent(void *self, void *edx, void *fn, void *parms, void *result)
 {
     maybe_start_trace(fn);
+    if (g_triggerScanned) watch_call("PE", (DWORD)self, (DWORD)fn, 0);
     trace_call("PE", (DWORD)self, (DWORD)fn);
     g_depth++;
     g_origPE(self, edx, fn, parms, result);
@@ -377,8 +429,10 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         GetModuleFileNameA(inst, g_logPath, MAX_PATH);        /* ...\Binaries\Win32\xinput1_3.dll */
         if ((slash = strrchr(g_logPath, '\\'))) *slash = 0;
         strcpy_s(g_tracePath, MAX_PATH, g_logPath);
+        strcpy_s(g_watchPath, MAX_PATH, g_logPath);
         strcat_s(g_logPath, MAX_PATH, "\\..\\..\\CoopMod\\coop_log.txt");
         strcat_s(g_tracePath, MAX_PATH, "\\..\\..\\CoopMod\\coop_trace.txt");
+        strcat_s(g_watchPath, MAX_PATH, "\\..\\..\\CoopMod\\coop_watch.txt");
         logline("---- CoopMod xinput proxy loaded ----");
         install_hooks();
         CreateThread(NULL, 0, monitor, NULL, 0, NULL);

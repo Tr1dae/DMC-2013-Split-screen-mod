@@ -43,6 +43,7 @@ your own copy of the game.
 | **F6** | Player 2 joins on the second controller and spawns next to player 1. Press again to teleport player 2 back to player 1. After F8, F6 brings player 2 back. |
 | **F7** | Cycle the view: side by side → top/bottom → shared screen (one camera framing both players, *experimental*) |
 | **F8** | Drop player 2 (their Dante leaves) and show player 1 fullscreen, for example for platforming or QTE sections |
+| **F10** | Force-clear a stuck pause (if the game freezes after a popup) |
 
 - Player 1 uses the first controller, plus keyboard and mouse.
 - Player 2 uses the second controller.
@@ -53,6 +54,7 @@ your own copy of the game.
 - Single-player systems still assume one Dante. Player 2 can lock on to and target player 1, and the
   HUD, checkpoints and death handling are player 1's.
 - The shared-screen camera is a first version: it can clip through walls when the players spread out, and player 2's stick directions follow player 2's own (hidden) camera.
+- Tutorial popups can leave the game frozen with two players. F10 unfreezes it (investigating).
 - Rumble and on-screen button prompts follow whichever controller was used last.
 - If player 1 uses the keyboard, controller buttons may pause for both players until a controller
   button is pressed.

@@ -160,6 +160,17 @@ def build_engine(src, dst):
         'end', RETURN_NOTHING, END])
     repurpose_cheat(pp, 'DebugPause', 'RemovePlayer', script)
 
+    # ClearPause (F10): escape hatch for a pause nobody releases. Every SetPause adds a
+    # CanUnpause delegate to GameInfo.Pausers and the world stays paused until all of them agree.
+    #   Outer.WorldInfo.Game.Pausers.Length = 0;  Outer.WorldInfo.Pauser = None;
+    world = context(inst(Outer), E('Actor.WorldInfo'), inst(E('Actor.WorldInfo')))
+    game = context(world, E('WorldInfo.Game'), inst(E('WorldInfo.Game')))
+    script = assemble([
+        let(cat(tok(0x36), context(game, E('GameInfo.Pausers'), inst(E('GameInfo.Pausers')))), tok(0x25)),
+        let(context(world, E('WorldInfo.Pauser'), inst(E('WorldInfo.Pauser'))), NONE),
+        RETURN_NOTHING, END])
+    repurpose_cheat(pp, 'Loaded', 'ClearPause', script)
+
     # SplitAxis (F7): side by side -> top/bottom -> shared screen -> side by side.
     script = assemble([
         ('jump_if_not', 'not_v', int_eq_byte(active(), ESST_2P_VERTICAL)),
