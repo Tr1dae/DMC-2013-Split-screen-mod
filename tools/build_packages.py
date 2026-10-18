@@ -302,6 +302,8 @@ def build_engine(src, dst):
 
 
 SHARED_CAMERA_PULLBACK = 0.6   # extra camera distance per unit of distance between the players
+RETARGET_COOLDOWN = 3.0        # seconds an enemy keeps its player target before it may switch
+RETARGET_MARGIN = 150.0        # the other player must be this much closer (Unreal units)
 
 
 def build_shared_camera(pp, E, OuterImp, GamePlayers, LocalPlayerCls, ViewportClient, Player,
@@ -493,6 +495,10 @@ def build_devilgame(src, dst):
     is_p2 = andand(native(0x77, final_call(get_p1), NONE), native(0x77, final_call(get_p1), tok(0x17)))
     insert_code(pp, 'DVPawn_Player.PostPossessed', 0,
                 lambda reloc: jump_if_not(reloc(0x1FD), native(0x81, is_p2)))
+    # Enemy retargeting (NTGameFramework's NTAIController.ConsiderOtherAsBuddy, see there) runs
+    # every frame from the AI controller's Tick:  final NTAIController.ConsiderOtherAsBuddy(None);
+    append_to_function(pp, 'DVAIController.Tick',
+                       [final_call(find_import(pk, 'NTGameFramework.NTAIController.ConsiderOtherAsBuddy'), NONE)])
     pp.save(dst)
     print('wrote', dst)
 
@@ -539,21 +545,64 @@ def build_ntgameframework(src, dst):
     insert_code(pp, 'NTGameInfo_SP.RestartPlayer', 0x70,
                 lambda reloc: jump_if_not(reloc(0x9E), native(0x81, is_p2)))
 
-    # Enemy AI only works against player 1: the native AI coordinator hands out attack permission
-    # (and builds its Havok avoidance obstacles) for NT_GetLocalPlayerPawn() only. Enemies still
-    # picked player 2 as their combat target, then circled forever waiting for an attack slot.
-    # So enemies don't treat player 2 as an enemy:
-    #   if (P1 != None && Other != P1 && NTPawn(Other).IsPlayerControlled()) return false;
-    other = pp.export_index('NTAIController.ConsiderOtherAsEnemy.Other')
+    # Enemy targeting with two players: the nearest player is the target.
+    # 1. ChooseCombatTarget (run when an enemy's threat list changes) scores player pawns by
+    #    distance instead of threat:   if (NTPawn(Info.m_Character).IsPlayerControlled())
+    #        EnemyThreatRating = 100000 - VSize(Info.m_Character.Location - m_NTPawn.Location);
     ntpawn = pp.export_index('NTPawn')
     is_pc = pp.export_index('NTPawn.IsPlayerControlled')
     is_pc_ret = pp.export_index('NTPawn.IsPlayerControlled.ReturnValue')
-    friendly = andand(andand(native(0x77, final_call(get_p1), NONE),
-                             native(0x77, local(other), final_call(get_p1))),
-                      context(dyncast(ntpawn, local(other)), is_pc_ret, final_call(is_pc)))
-    ret_false = raw([0x04, 0x28])
-    insert_code(pp, 'NTAIController.ConsiderOtherAsEnemy', 0,
-                lambda reloc: cat(jump_if_not(3 + friendly.mem + ret_false.mem, friendly), ret_false))
+    is_dead = pp.export_index('NTPawn.IsDead')
+    is_dead_ret = pp.export_index('NTPawn.IsDead.ReturnValue')
+    loc = find_import(pk, 'Engine.Actor.Location')
+    me = inst(m_ai_pawn := pp.export_index('NTAIController.m_NTPawn'))
+    at = lambda e: context(e, loc, inst(loc))
+    dist = lambda e: native(0xE1, native(0xD8, at(e), at(me)))                   # VSize(a - b)
+    info = local(pp.export_index('NTAIController.ChooseCombatTarget.Info'))
+    who = context(info, (m_char := pp.export_index('NTAIFactCharacterInfo.m_Character')), inst(m_char))
+    rating = local(pp.export_index('NTAIController.ChooseCombatTarget.EnemyThreatRating'))
+    def score(reloc):
+        cond = context(dyncast(ntpawn, who), is_pc_ret, final_call(is_pc))
+        body = let(rating, native(0xAF, floatconst(100000.0), dist(who)))       # float -
+        return cat(jump_if_not(0x1C1 + 3 + cond.mem + body.mem, cond), body)
+    insert_code(pp, 'NTAIController.ChooseCombatTarget', 0x1C1, score)          # before "if rating > best"
+
+    # 2. Re-check every frame (DevilGame calls this from DVAIController.Tick). Once RETARGET_COOLDOWN
+    #    seconds have passed since the last target change, switch to another player who is at least
+    #    RETARGET_MARGIN closer. NTAIController.ConsiderOtherAsBuddy is unused (DVAIController
+    #    overrides it without calling super), so it hosts the code; its Other parameter is the
+    #    iterator variable.
+    #   if (m_CombatTargetPawn == None || m_NTPawn == None) return false;
+    #   if (!m_CombatTargetPawn.IsPlayerControlled()) return false;
+    #   if (!(m_fLastTargetChangedTime + COOLDOWN <= WorldInfo.TimeSeconds)) return false;
+    #   foreach NT_AllPlayerPawns(Other)
+    #     if (Other != m_CombatTargetPawn && !NTPawn(Other).IsDead()
+    #         && VSize(Other - me) + MARGIN < VSize(m_CombatTargetPawn - me)) {
+    #       SetCombatTarget(Other); m_fLastTargetChangedTime = WorldInfo.TimeSeconds; return true; }
+    #   return false;
+    fn = pp.export_index('NTAIController.ConsiderOtherAsBuddy')
+    other = local(pp.export_index('NTAIController.ConsiderOtherAsBuddy.Other'))
+    target = inst(pp.export_index('NTAIController.m_CombatTargetPawn'))
+    last = inst(pp.export_index('NTAIController.m_fLastTargetChangedTime'))
+    world_t, time_s = find_import(pk, 'Engine.Actor.WorldInfo'), find_import(pk, 'Engine.WorldInfo.TimeSeconds')
+    now = context(inst(world_t), time_s, inst(time_s))
+    all_players = find_import(pk, 'Engine.Actor.NT_AllPlayerPawns')
+    script = assemble([
+        ('jump_if_not', 'no', andand(native(0x77, target, NONE), native(0x77, me, NONE))),
+        ('jump_if_not', 'no', context(target, is_pc_ret, final_call(is_pc))),
+        ('jump_if_not', 'no', native(0xB2, native(0xAE, last, floatconst(RETARGET_COOLDOWN)), now)),  # <=
+        ('foreach', 'done', final_call(all_players, other)),
+        ('jump_if_not', 'next', andand(andand(
+            native(0x77, other, target),
+            native(0x81, context(dyncast(ntpawn, other), is_dead_ret, final_call(is_dead)))),
+            native(0xB0, native(0xAE, dist(other), floatconst(RETARGET_MARGIN)), dist(target)))),  # <
+        virtual_call(pk, 'SetCombatTarget', other),
+        let(last, now),
+        ITER_POP, raw([0x04, 0x27]),                                             # return true
+        'next', ITER_NEXT,
+        'done', ITER_POP,
+        'no', raw([0x04, 0x28]), END])                                           # return false
+    pp.replace_export_data(fn, build_function(pp.export_data(fn), script))
 
     # The pause menu is one shared UI bound to player 1, so its Resume only releases player 1's pause.
     # When player 2 pressed Start, their own pause (CanUnpauseExternalUI on player 2) was never

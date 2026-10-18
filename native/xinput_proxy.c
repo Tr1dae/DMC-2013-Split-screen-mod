@@ -317,9 +317,12 @@ static void maybe_start_trace(void *fn)
 static const char *g_watchNames[] = { "SetPause", "ClearPause", "ConditionalPause", "PauseGame",
     "ResumeGame", "Tut_ShowBox", "Tut_HideBox", "OnControllerChanged", "OnLostFocusPause",
     "Handle_PausePressed", "DisplayGameMenu", "DisplayIngameDialog", "SetCinematicMode", "AddPlayer",
+    /* enemy AI: who gets attack permission, target changes, launched / failed attacks */
+    "PermissionToken", "SetCombatTarget", "NotifyLaunchedAttack", "NotifyFailedAttack",
     /* markers: harmless calls the mod's AddPlayer makes at each early exit (logged only from there) */
     "IsPrimaryPlayer", "GetSplitscreenPlayerCount", 0 };
-#define WATCH_FIRST_MARKER 14
+#define WATCH_FIRST_MARKER 18
+#define WATCH_DUMP_PARMS 14     /* PermissionToken (an event called from C++): print its parameters */
 static int g_watchIdx[32];
 static char g_watchPath[MAX_PATH];
 
@@ -335,7 +338,7 @@ static void find_watch_indices(void)
     }
 }
 
-static void watch_call(const char *kind, DWORD self, DWORD fn, DWORD stack)
+static void watch_call(const char *kind, DWORD self, DWORD fn, DWORD stack, DWORD parms)
 {
     char a[96], b[96], c[96], d[96], e[96], f[96];
     int idx = (int)rd(fn + OBJ_NAME), w;
@@ -357,6 +360,16 @@ static void watch_call(const char *kind, DWORD self, DWORD fn, DWORD stack)
                  obj_name(rd(stack + 0x10), f, sizeof f); }
     fprintf(out, "%02d:%02d:%02d.%03d %s %s.%s on %s", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds, kind, b, a, c);
     if (stack) fprintf(out, "  <- %s.%s in %s", e, f, d);
+    if (parms && w == WATCH_DUMP_PARMS) {
+        int k;
+        for (k = 0; k < 6; k++) {
+            DWORD v = rd(parms + 4 * k);
+            if (v > 0x10000 && v != 0xDEADBEEF && rd(v + OBJ_CLASS) > 0x10000)
+                fprintf(out, " [%d]=%s", k, obj_name(v, a, sizeof a));
+            else
+                fprintf(out, " [%d]=%d", k, (int)v);
+        }
+    }
     fprintf(out, "\n");
     fclose(out);
 }
@@ -377,7 +390,7 @@ static void trace_viewpoint(DWORD self, DWORD fn, void *parms)
 static void __fastcall hk_CallFunction(void *self, void *edx, void *stack, void *result, void *fn)
 {
     maybe_start_trace(fn);
-    if (g_triggerScanned) watch_call("CF", (DWORD)self, (DWORD)fn, (DWORD)stack);
+    if (g_triggerScanned) watch_call("CF", (DWORD)self, (DWORD)fn, (DWORD)stack, 0);
     trace_call("CF", (DWORD)self, (DWORD)fn);
     g_depth++;
     g_origCF(self, edx, stack, result, fn);
@@ -389,7 +402,7 @@ static void __fastcall hk_CallFunction(void *self, void *edx, void *stack, void 
 static void __fastcall hk_ProcessEvent(void *self, void *edx, void *fn, void *parms, void *result)
 {
     maybe_start_trace(fn);
-    if (g_triggerScanned) watch_call("PE", (DWORD)self, (DWORD)fn, 0);
+    if (g_triggerScanned) watch_call("PE", (DWORD)self, (DWORD)fn, 0, (DWORD)parms);
     trace_call("PE", (DWORD)self, (DWORD)fn);
     g_depth++;
     g_origPE(self, edx, fn, parms, result);
