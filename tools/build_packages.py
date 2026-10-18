@@ -523,12 +523,12 @@ def build_devilgame(src, dst):
 
     # Enemies only attack while "on camera" (DVActionGraph_ConditionDef_InCameraView), and
     # DVActionGraph_Context.IsOnCamera asks the AI for its relevant camera, which is player 1's.
-    # Enemies fighting player 2 off player 1's screen stood still. Also accept the camera of the
-    # player the enemy is fighting:
+    # Enemies fighting player 2 off player 1's screen stood still. Enemies whose combat target is
+    # anyone but player 1 now always count as on camera:
     #   CamController = <original>;
     #   if (CamController != None && CamController.IsPawnPartiallyInView(m_Pawn)) return true;
-    #   if (NTPlayerController(NTAIController(m_Pawn.m_Controller).m_CombatTargetPawn.Owner)
-    #         .GetRelevantCameraController().IsPawnPartiallyInView(m_Pawn)) return true;
+    #   T = NTAIController(m_Pawn.m_Controller).m_CombatTargetPawn;
+    #   if (T != None && T != P1) return true;
     #   return false;
     from disasm import parse_function
     fn = E('DVActionGraph_Context.IsOnCamera')
@@ -544,16 +544,12 @@ def build_devilgame(src, dst):
     ai = dyncast(find_import(pk, 'NTGameFramework.NTAIController'),
                  field(pawn, find_import(pk, 'NTGameFramework.NTPawn.m_Controller')))
     target = field(ai, find_import(pk, 'NTGameFramework.NTAIController.m_CombatTargetPawn'))
-    target_pc = dyncast(find_import(pk, 'NTGameFramework.NTPlayerController'),
-                        field(target, find_import(pk, 'Engine.Actor.Owner')))
-    target_cam = context(target_pc, find_import(pk, 'NTGameFramework.NTController_Interface.GetRelevantCameraController.ReturnValue'),
-                         virtual_call(pk, 'GetRelevantCameraController'))
     pp.replace_export_data(fn, build_function(pp.export_data(fn), assemble([
         first,
         ('jump_if_not', 'theirs', andand(native(0x77, cam, NONE), in_view(cam))),
         raw([0x04, 0x27]),
         'theirs',
-        ('jump_if_not', 'no', in_view(target_cam)),
+        ('jump_if_not', 'no', andand(native(0x77, target, NONE), native(0x77, target, p1()))),
         raw([0x04, 0x27]),
         'no', raw([0x04, 0x28]), END])))
 
@@ -680,6 +676,19 @@ def build_ntgameframework(src, dst):
     forward = cat(tok(0x04), context(p1_pc, hp_ret, virtual_call(pk, 'Handle_PausePressed', local(is_debug))))
     insert_code(pp, 'NTPlayerController.Handle_PausePressed', 0,
                 lambda reloc: cat(jump_if_not(3 + not_p1.mem + forward.mem, not_p1), forward))
+
+    # NTProcess_BailIfOffScreen (part of enemy attack moves) cancels the move when the attacker is
+    # outside NTCam_CameraController.Get(), player 1's camera. Enemies fighting anyone but player 1
+    # never bail:   if (T != None && T != P1) return;
+    #   T = NTAIController(m_OwningPawn.m_Controller).m_CombatTargetPawn
+    owning = inst(pp.export_index('NTProcessBase.m_OwningPawn'))
+    m_ctrl = pp.export_index('NTPawn.m_Controller')
+    ctp = pp.export_index('NTAIController.m_CombatTargetPawn')
+    bail_target = context(dyncast(pp.export_index('NTAIController'), context(owning, m_ctrl, inst(m_ctrl))), ctp, inst(ctp))
+    p1_static = static_call(find_import(pk, 'Engine.Actor'), 0, final_call(get_p1))
+    not_p1_fight = andand(native(0x77, bail_target, NONE), native(0x77, bail_target, p1_static))
+    insert_code(pp, 'NTProcess_BailIfOffScreen.ProcessTick', 0,
+                lambda reloc: cat(jump_if_not(3 + not_p1_fight.mem + RETURN_NOTHING.mem, not_p1_fight), RETURN_NOTHING))
 
     # Shared health: player 1's health is the pool. Appended to NTPawn.SetHealth (every heal,
     # damage and checkpoint refill goes through it):
