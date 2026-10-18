@@ -1,0 +1,185 @@
+"""Add a "SplitScreen Mod" entry to the ESC pause menu (DevilIngameUI.IngameMenu).
+
+The pause menu is a Scaleform (GFx 3, AS2) movie inside Dante_Archetypes_SF.upk. Its class
+Scripts.IngameMenu wires seven fixed CLIK buttons in Hook_InitAsMainGame. We append AS2 code to
+the class's DoInitAction that wraps Hook_InitAsMainGame and attaches extra CLIK "Button" clips
+(the movie exports that symbol), so no timeline or graphics change:
+
+  * "SplitScreen Mod" under "Main Menu" opens a submenu in place of the normal buttons:
+      Split Screen: On/Off           -> ExecConsoleCommand "AddPlayer 1" / "RemovePlayer"
+      Camera: Side by Side / Top & Bottom / Shared Screen -> "AddPlayer 10<view>"
+      Back
+  * The buttons call the game's own ExecConsoleCommand UI callback
+    (DVGFxMovieHandler_IngameUI_Callbacks), which runs a console command on player 1.
+  * Menu state lives in _global.coopP2 / _global.coopView, which persist while the game runs.
+
+Usage: python build_ui.py <original Dante_Archetypes_SF.upk> <output upk>
+"""
+import os, struct, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from as2 import *
+import swf
+from upkpatch import PatchedPackage
+
+MOVIE = 'DevilIngameUI.IngameMenu'
+CLASS_SPRITE = 66                 # DoInitAction that defines Scripts.IngameMenu
+VIEW_SIDE, VIEW_TOP, VIEW_SHARED = 2, 1, 6   # DesiredSplitscreenType values (6 = mod's shared screen)
+
+R_ARG, R_PM, R_TMP = Reg(2), Reg(3), Reg(4)
+
+
+def proto():
+    return member(var('_global'), 'Scripts', 'IngameMenu', 'prototype')
+
+
+def glob(name):
+    return member(var('_global'), name)
+
+
+def pm():
+    return member(val(THIS), 'PauseMenu')
+
+
+def method(name, params, body):
+    return set_member(proto(), name, function(params, body + ret()))
+
+
+def console(cmd):
+    return external_call('ExecConsoleCommand', cmd)
+
+
+def menu_code():
+    stock = ['button0%d' % i for i in range(1, 8)]
+    coop = [('coopB0', 61, 'onCoopMenu'), ('coopB1', 62, 'onCoopSplit'),
+            ('coopB2', 63, 'onCoopCamera'), ('coopB3', 64, 'onCoopBack')]
+
+    setup = set_reg(R_PM, pm())
+    setup += if_not(eq(member(val(R_PM), 'coopB0'), val(UNDEFINED)), 'have')
+    for name, depth, handler in coop:
+        setup += set_reg(R_TMP, call_method(val(R_PM), 'attachMovie', 'Button', name, depth))
+        setup += set_member(val(R_TMP), '_xscale', member(val(R_PM), 'button07', '_xscale'))
+        setup += set_member(val(R_TMP), '_yscale', member(val(R_PM), 'button07', '_yscale'))
+        setup += stmt(call_method(val(R_TMP), 'addEventListener', 'press', THIS, handler))
+    setup += label('have')
+    # SplitScreen Mod sits one row below the last stock button; the submenu reuses rows 1-3.
+    setup += set_member(member(val(R_PM), 'coopB0'), '_x', member(val(R_PM), 'button07', '_x'))
+    setup += set_member(member(val(R_PM), 'coopB0'), '_y',
+                        add(member(val(R_PM), 'button07', '_y'),
+                            sub(member(val(R_PM), 'button07', '_y'), member(val(R_PM), 'button06', '_y'))))
+    for i, (name, _, _) in enumerate(coop[1:], 1):
+        setup += set_member(member(val(R_PM), name), '_x', member(val(R_PM), 'button0%d' % i, '_x'))
+        setup += set_member(member(val(R_PM), name), '_y', member(val(R_PM), 'button0%d' % i, '_y'))
+    setup += set_member(member(val(R_PM), 'coopB0'), 'label', 'SplitScreen Mod')
+    setup += set_member(member(val(R_PM), 'coopB3'), 'label', 'Back')
+    setup += if_not(eq(glob('coopView'), val(UNDEFINED)), 'viewset')
+    setup += set_member(var('_global'), 'coopView', VIEW_SIDE)
+    setup += label('viewset')
+    setup += stmt(call_method(val(THIS), 'coopShow', False, False))
+
+    labels = set_reg(R_PM, pm())
+    labels += if_not(eq(glob('coopP2'), val(True)), 'off')
+    labels += set_member(member(val(R_PM), 'coopB1'), 'label', 'Split Screen: On') + jump('cam')
+    labels += label('off') + set_member(member(val(R_PM), 'coopB1'), 'label', 'Split Screen: Off')
+    labels += label('cam') + set_reg(R_TMP, glob('coopView'))
+    labels += if_not(eq(val(R_TMP), val(VIEW_TOP)), 'nt')
+    labels += set_member(member(val(R_PM), 'coopB2'), 'label', 'Camera: Top & Bottom') + jump('end')
+    labels += label('nt') + if_not(eq(val(R_TMP), val(VIEW_SHARED)), 'ns')
+    labels += set_member(member(val(R_PM), 'coopB2'), 'label', 'Camera: Shared Screen') + jump('end')
+    labels += label('ns') + set_member(member(val(R_PM), 'coopB2'), 'label', 'Camera: Side by Side')
+    labels += label('end')
+
+    sound = stmt(call_method(val(THIS), 'PlayForwardSound'))
+    view_cmd = add(val('AddPlayer 10'), glob('coopView'))          # "AddPlayer 102" etc.
+
+    split = sound + if_not(eq(glob('coopP2'), val(True)), 'join')
+    split += console('RemovePlayer') + set_member(var('_global'), 'coopP2', False) + jump('lbl')
+    split += label('join') + console('AddPlayer 1')
+    split += external_call('ExecConsoleCommand', view_cmd)
+    split += set_member(var('_global'), 'coopP2', True)
+    split += label('lbl') + stmt(call_method(val(THIS), 'coopLabels'))
+
+    camera = sound + set_reg(R_TMP, glob('coopView'))
+    camera += if_not(eq(val(R_TMP), val(VIEW_SIDE)), 'c1') + set_member(var('_global'), 'coopView', VIEW_TOP) + jump('c3')
+    camera += label('c1') + if_not(eq(val(R_TMP), val(VIEW_TOP)), 'c2')
+    camera += set_member(var('_global'), 'coopView', VIEW_SHARED) + jump('c3')
+    camera += label('c2') + set_member(var('_global'), 'coopView', VIEW_SIDE)
+    camera += label('c3') + if_not(eq(glob('coopP2'), val(True)), 'c4')
+    camera += external_call('ExecConsoleCommand', view_cmd)
+    camera += label('c4') + stmt(call_method(val(THIS), 'coopLabels'))
+
+    def show_body():
+        # coopShow(on = r2, focus = r3); r4 = PauseMenu
+        pmr = Reg(4)
+        b = set_reg(pmr, pm()) + set_member(val(THIS), 'coopMode', val(R_ARG))
+        for n in stock + ['coopB0']:
+            b += set_member(member(val(pmr), n), '_visible', not_(val(R_ARG)))
+        for n, _, _ in coop[1:]:
+            b += set_member(member(val(pmr), n), '_visible', val(R_ARG))
+        b += stmt(call_method(val(THIS), 'coopLabels'))
+        b += if_not(val(Reg(3)), 'nofocus')
+        b += if_not(val(R_ARG), 'back')
+        b += stmt(call_method(var('Selection'), 'setFocus', member(val(pmr), 'coopB1'))) + jump('nofocus')
+        b += label('back') + stmt(call_method(var('Selection'), 'setFocus', member(val(pmr), 'coopB0')))
+        b += label('nofocus')
+        return b
+
+    code = if_not(eq(member(proto(), 'coopOrigMain'), val(UNDEFINED)), 'installed')
+    code += set_member(proto(), 'coopOrigMain', member(proto(), 'Hook_InitAsMainGame'))
+    code += method('Hook_InitAsMainGame', ['SelectedButtonIndex'],
+                   stmt(call_method(val(THIS), 'coopOrigMain', val(R_ARG))) +
+                   stmt(call_method(val(THIS), 'coopSetup')))
+    code += method('coopSetup', [], setup)
+    code += method('coopShow', ['on', 'focus'], show_body())
+    code += method('coopLabels', [], labels)
+    code += method('onCoopMenu', ['event'], sound + stmt(call_method(val(THIS), 'coopShow', True, True)))
+    code += method('onCoopBack', ['event'], sound + stmt(call_method(val(THIS), 'coopShow', False, True)))
+    code += method('onCoopSplit', ['event'], split)
+    code += method('onCoopCamera', ['event'], camera)
+    code += label('installed')
+    return assemble(code)
+
+
+def patch_swf(data):
+    """Insert the menu code just before the End action of the class DoInitAction."""
+    d = bytearray(data)
+    for code, start, body, ln in swf.iter_tags(d, swf.body_start(d), len(d)):
+        if code == 59 and struct.unpack_from('<H', d, body)[0] == CLASS_SPRITE:
+            end = body + ln
+            assert d[end - 1] == 0, 'DoInitAction does not end with End'
+            extra = menu_code()
+            d[end - 1:end - 1] = extra
+            assert struct.unpack_from('<H', d, start)[0] & 0x3F == 0x3F, 'expected a long tag header'
+            struct.pack_into('<I', d, start + 2, ln + len(extra))
+            struct.pack_into('<I', d, 4, len(d))          # SWF file length
+            return bytes(d), len(extra)
+    raise KeyError('class DoInitAction')
+
+
+def build(src, dst):
+    pp = PatchedPackage(src, os.path.join(os.path.dirname(os.path.abspath(dst)), '_scratch'))
+    pk = pp.pkg
+    fn = pp.export_index(MOVIE)
+    old = pp.export_data(fn)
+    from props import read_tags
+    e = pk.exps[fn - 1]
+    tags, _ = read_tags(pk, pk.d, e['off'] + 4, e['off'] + e['size'])
+    raw = next(t for t in tags if t[0] == 'RawData')
+    name, typ, size, aidx, extra_, off, val_ = raw
+    count, = struct.unpack_from('<i', val_, 0)
+    swf_bytes = val_[4:4 + count]
+    new_swf, added = patch_swf(swf_bytes)
+    rel = off - e['off']                          # value offset inside the export
+    new_val = struct.pack('<i', len(new_swf)) + new_swf
+    new = bytearray(old[:rel] + new_val + old[rel + size:])
+    struct.pack_into('<i', new, rel - 8, len(new_val))  # tag Size (before ArrayIndex, which is 0)
+    assert struct.unpack_from('<i', old, rel - 8)[0] == size and struct.unpack_from('<i', old, rel - 4)[0] == 0
+    pp.replace_export_data(fn, bytes(new))
+    pp.save(dst)
+    print('wrote', dst, '(+%d bytes of AS2)' % added)
+    return new_swf
+
+
+if __name__ == '__main__':
+    out = build(sys.argv[1], sys.argv[2])
+    if len(sys.argv) > 3:
+        open(sys.argv[3], 'wb').write(out)

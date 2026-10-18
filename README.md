@@ -45,6 +45,10 @@ your own copy of the game.
 | **F8** | Drop player 2 (their Dante leaves) and show player 1 fullscreen, for example for platforming or QTE sections |
 | **F10** | Force-clear a stuck pause (if the game freezes after a popup) |
 
+In the ESC pause menu, **SplitScreen Mod** (below Main Menu) opens a settings page:
+**Split Screen: On/Off** adds or drops player 2, and **Camera** switches between side by side,
+top & bottom and shared screen.
+
 - Player 1 uses the first controller, plus keyboard and mouse.
 - Player 2 uses the second controller.
 - Press F6 in a mission, not on the main menu.
@@ -64,7 +68,7 @@ your own copy of the game.
 - [x] Second local player with their own camera and controller
 - [x] Drop player 2 / single-screen mode for platforming and QTE sections
 - [x] Shared camera mode, with both players on one screen
-- [ ] In-game "SplitScreen Mod" settings menu
+- [~] In-game "SplitScreen Mod" settings menu in the pause screen (first version)
 - [ ] Player 2 not targeting player 1
 - [ ] Shared HUD, health and death rules
 - [ ] Distinct character models for player 2

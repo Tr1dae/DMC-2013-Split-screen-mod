@@ -125,6 +125,12 @@ def build_engine(src, dst):
     # DmC players own their pawn through NTPlayerController.m_NTPawn and never set Controller.Pawn,
     # so pawn work is done by DevilGame cheats run on player 2's own controller (see build_devilgame).
     script = assemble([
+        # AddPlayer 100+n: set the split view directly (the pause menu's Camera option):
+        # 101 top/bottom, 102 side by side, 106 shared screen.
+        ('jump_if_not', 'not_view', native(0x99, local(cid), raw([0x2C, 100]))),          # >=
+        let(desired(), cat(raw([0x38, 0x3D]), native(0x93, local(cid), raw([0x2C, 100])))),   # byte(cid - 100)
+        layout(), RETURN_NOTHING,
+        'not_view',
         # Join if this pad has no player yet; pressing it again just regroups.
         ('jump_if_not', 'joined', native(OP_EQ_OBJ, new_lp(), NONE)),
         create,

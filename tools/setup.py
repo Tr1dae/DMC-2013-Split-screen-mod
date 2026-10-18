@@ -17,6 +17,7 @@ ORIGINALS = {
     'DevilGame/CookedPCConsole/NTGameFramework.upk': ('backup/CookedPCConsole/NTGameFramework.upk', 'ea6aed0d4f12ff9d300514b07b1b2d9046778125'),
     'DevilGame/Config/DefaultInput.ini':             ('backup/Config/DefaultInput.ini', 'f363f561b9bb5e861175f89c86db5f22008dff27'),
     'Binaries/Win32/DMC-DevilMayCry.exe':            ('backup/Binaries/DMC-DevilMayCry.exe', 'b0e636b04d1dbda991e946af14f36fa79ad57912'),
+    'DevilGame/CookedPCConsole/Dante_Archetypes_SF.upk': ('backup/CookedPCConsole/Dante_Archetypes_SF.upk', '3b2d788fd5c678771fe8c98961fd788b7092861f'),
 }
 
 BINDINGS = [
@@ -72,6 +73,10 @@ def main():
     subprocess.check_call(py + [os.path.join(HERE, 'patch_exe.py'),
                                 os.path.join(MOD, 'backup/Binaries/DMC-DevilMayCry.exe'),
                                 os.path.join(MOD, 'build/DMC-DevilMayCry.exe')])
+    subprocess.check_call(py + [os.path.join(HERE, 'build_ui.py'),
+                                os.path.join(MOD, 'backup/CookedPCConsole/Dante_Archetypes_SF.upk'),
+                                os.path.join(MOD, 'build/Dante_Archetypes_SF.upk')])
+    shutil.rmtree(os.path.join(MOD, 'build/_scratch'), ignore_errors=True)
     build_input_ini()
     if not os.path.exists(os.path.join(MOD, 'build/xinput1_3.dll')):
         print('note: build/xinput1_3.dll (optional diagnostics helper) not built; see native/build.bat')

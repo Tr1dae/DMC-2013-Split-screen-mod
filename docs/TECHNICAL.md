@@ -103,6 +103,23 @@ QLOC's PC port lets any pad drive player 1:
   DevilGame cheat does the same `NTGameInfo_SP.RestartPlayer` + `PostRestartPlayer` as a mid-mission
   join. F6 then restores the split and regroups.
 
+## Pause menu entry (`tools/build_ui.py`)
+
+- The ESC menu is the Scaleform movie `DevilIngameUI.IngameMenu`, inside `Dante_Archetypes_SF.upk`.
+  It is a GFx 3 / SWF 8 movie with AS2 and CLIK components.
+- The class `Scripts.IngameMenu` wires seven fixed buttons in `Hook_InitAsMainGame` and calls back
+  into UnrealScript with `ExternalInterface.call(...)`, which reaches
+  `DVGFxMovieHandler_IngameUI_Callbacks` by function name.
+- The mod appends AS2 to the class's `DoInitAction`, just before `End`, so no existing branch moves:
+  - It wraps `Hook_InitAsMainGame`.
+  - It attaches CLIK `Button` clips (an exported symbol of the movie): "SplitScreen Mod" below the
+    last stock button, plus a three-row submenu.
+- The submenu calls the game's existing `ExecConsoleCommand` callback with the mod's commands.
+  `AddPlayer 100+n` sets the split view directly.
+- Menu state is kept in `_global.coopP2` and `_global.coopView`.
+- `tools/swf.py` (tag lister and AS2 disassembler) and `tools/as2.py` (assembler) do the SWF work.
+  The movie's `RawData` array is rewritten and the export is appended at the end of the package.
+
 ## Diagnostics DLL (`native/`)
 
 - The game imports `XInputGetState`/`XInputSetState` (ordinals 2 and 3) from `xinput1_3.dll`, so a DLL
