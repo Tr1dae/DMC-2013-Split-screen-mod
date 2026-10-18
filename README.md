@@ -75,7 +75,8 @@ is brought back next to player 1.
 - [x] Enemies fight both players: nearest-player targeting with a switch cooldown, attacks off camera
 - [x] Shared health pool (either player's damage and pickups), health multiplier setting
 - [ ] Player 2 not targeting player 1
-- [~] Kat as player 2: her mesh retargeted onto Dante's skeleton by bone name (first version, untested)
+- [~] Player 2 as Kat or Vergil (pause menu): mesh retargeted onto Dante's skeleton by bone name. Vergil shares
+      Dante's full skeleton; Kat works but her fingertips and neck need skinning cleanup (DCC pass)
 - [ ] Repackage Kat's mesh into a small standalone package (today it is loaded from a level package)
 
 ## How it works

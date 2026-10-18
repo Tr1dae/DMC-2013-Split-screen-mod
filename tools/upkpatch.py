@@ -147,6 +147,7 @@ def andand(a, b):
     """a && b with short-circuit (the skip covers b and the closing EndFunctionParms)."""
     return cat(tok(0x82), a, tok(0x18), u16(b.mem + 1), b, tok(0x16))
 def floatconst(f): return tok(0x1E) + raw(struct.pack('<f', f))
+def intconst(v): return tok(0x1D) + raw(struct.pack('<i', v))
 def objconst(i): return tok(0x20) + obj(i)
 def static_call(cls, ret_field, call):
     """class'X'.static.F(...) from a class that is not an X (EX_ClassContext)."""

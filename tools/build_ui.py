@@ -9,7 +9,7 @@ the class's DoInitAction that wraps Hook_InitAsMainGame and attaches extra CLIK 
       Split Screen: On/Off           -> ExecConsoleCommand "AddPlayer 1" / "RemovePlayer"
       Camera: Side by Side / Top & Bottom / Shared Screen -> "AddPlayer 10<view>"
       Health: 1x / 0.75x / 0.5x / 0.25x  -> "DamageScale <1 / 1.333 / 2 / 4>" (shared health pool)
-      Player 2: Dante / Kat              -> "AddPlayer 300 / 301" (applied when the menu closes)
+      Player 2: Dante / Kat / Vergil     -> "AddPlayer 300 / 301 / 302" (applied when the menu closes)
       Back
   * The buttons call the game's own ExecConsoleCommand UI callback
     (DVGFxMovieHandler_IngameUI_Callbacks), which runs a console command on player 1. Joining or
@@ -31,6 +31,7 @@ CLASS_SPRITE = 66                 # DoInitAction that defines Scripts.IngameMenu
 VIEW_SIDE, VIEW_TOP, VIEW_SHARED = 2, 1, 6   # DesiredSplitscreenType values (6 = mod's shared screen)
 # Health setting: (label, damage scale players take). Fewer hit points = more damage per hit.
 HEALTH_LEVELS = [('1x', '1'), ('0.75x', '1.333'), ('0.5x', '2'), ('0.25x', '4')]
+CHARACTERS = ['Dante', 'Kat', 'Vergil']        # "AddPlayer 300 + index" on the game side
 
 R_ARG, R_PM, R_TMP = Reg(2), Reg(3), Reg(4)
 
@@ -106,9 +107,11 @@ def menu_code():
         labels += set_member(member(val(R_PM), 'coopB4'), 'label', 'Health: ' + name) + jump('hdone')
         labels += label('h%d' % i)
     labels += label('hdone')
-    labels += if_not(eq(glob('coopChar'), val(1)), 'cdante')
-    labels += set_member(member(val(R_PM), 'coopB5'), 'label', 'Player 2: Kat') + jump('cpdone')
-    labels += label('cdante') + set_member(member(val(R_PM), 'coopB5'), 'label', 'Player 2: Dante')
+    labels += set_reg(R_TMP, glob('coopChar'))
+    for i, name in enumerate(CHARACTERS):
+        labels += if_not(eq(val(R_TMP), val(i)), 'p%d' % i)
+        labels += set_member(member(val(R_PM), 'coopB5'), 'label', 'Player 2: ' + name) + jump('cpdone')
+        labels += label('p%d' % i)
     labels += label('cpdone')
 
     sound = stmt(call_method(val(THIS), 'PlayForwardSound'))
@@ -141,10 +144,14 @@ def menu_code():
     health += set_member(var('_global'), 'coopHealth', 0) + console('DamageScale 1')
     health += label('cdone') + stmt(call_method(val(THIS), 'coopLabels'))
 
-    # Player 2 character toggles Dante / Kat; the game side applies it when the menu closes.
-    character = sound + if_not(eq(glob('coopChar'), val(1)), 'tokat')
-    character += set_member(var('_global'), 'coopChar', 0) + console('AddPlayer 300') + jump('chdone')
-    character += label('tokat') + set_member(var('_global'), 'coopChar', 1) + console('AddPlayer 301')
+    # Player 2 character cycles Dante -> Kat -> Vergil; the game side applies it when the menu closes.
+    character = sound + set_reg(R_TMP, glob('coopChar'))
+    for i in range(len(CHARACTERS)):
+        nxt = (i + 1) % len(CHARACTERS)
+        character += if_not(eq(val(R_TMP), val(i)), 'ch%d' % i)
+        character += set_member(var('_global'), 'coopChar', nxt) + console('AddPlayer %d' % (300 + nxt))
+        character += jump('chdone') + label('ch%d' % i)
+    character += set_member(var('_global'), 'coopChar', 0) + console('AddPlayer 300')
     character += label('chdone') + stmt(call_method(val(THIS), 'coopLabels'))
 
     def show_body():
