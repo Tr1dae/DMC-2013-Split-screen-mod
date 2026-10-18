@@ -454,6 +454,8 @@ def build_devilgame(src, dst):
     set_loc, set_rot = find_import(pk, 'Engine.Actor.SetLocation'), find_import(pk, 'Engine.Actor.SetRotation')
     p1 = lambda: static_call(actor_cls, 0, final_call(get_p1))
     me = lambda: context(dyncast(ntpc, inst(outer)), nt_pawn, inst(nt_pawn))
+    m_health = find_import(pk, 'NTGameFramework.NTPawn.m_Health')
+    p1_health = lambda: context(p1(), m_health, inst(m_health))
 
     def try_place(dx, dy, dz):
         dest = native(0xD7, context(p1(), loc, inst(loc)), vect(dx, dy, dz))                 # vector +
@@ -465,6 +467,10 @@ def build_devilgame(src, dst):
         try_place(0, 0, 150),
         'placed',
         context(me(), 0, final_call(set_rot, context(p1(), rot, inst(rot)), EMPTY)),
+        # Shared health (see NTGameFramework's NTPawn.SetHealth): take player 1's current health.
+        ('jump_if_not', 'healthy', native(0xB1, p1_health(), floatconst(0.0))),
+        let(context(me(), m_health, inst(m_health)), p1_health()),
+        'healthy',
         RETURN_NOTHING, END])
     repurpose_cheat(pp, 'LockScythe', 'Teleport', script, cls='DVExecFunctions')
 
@@ -618,6 +624,44 @@ def build_ntgameframework(src, dst):
     forward = cat(tok(0x04), context(p1_pc, hp_ret, virtual_call(pk, 'Handle_PausePressed', local(is_debug))))
     insert_code(pp, 'NTPlayerController.Handle_PausePressed', 0,
                 lambda reloc: cat(jump_if_not(3 + not_p1.mem + forward.mem, not_p1), forward))
+
+    # Shared health: player 1's health is the pool. Appended to NTPawn.SetHealth (every heal,
+    # damage and checkpoint refill goes through it):
+    #   if (IsPlayerControlled() && P1 != None) {
+    #     if (self == P1) {                       // copy the pool to the other players
+    #       if (m_Health > 0) foreach NT_AllPlayerPawns(SeqEvent) if (SeqEvent != self)
+    #         NTPawn(SeqEvent).m_Health = m_Health;
+    #     } else if (m_Health <= 0) {             // a lethal hit on player 2 kills player 1 instead
+    #       if (P1.m_Health > 0) { m_Health = 1; P1.DealHealthDamage(P1.m_Health + 1); }
+    #     } else if (m_Health < P1.m_Health) P1.SetHealth(m_Health);   // player 2 took damage
+    #   }
+    # Copies write m_Health directly, so they never re-enter SetHealth. Player 2's own heals stay
+    # local (a fresh player 2 spawns at full health and must not refill the pool); DevilGame's
+    # Teleport cheat resets player 2 to the pool on every join and regroup.
+    hp = inst(pp.export_index('NTPawn.m_Health'))
+    p1_hp = context(final_call(get_p1), pp.export_index('NTPawn.m_Health'), hp)
+    iter_var = local(pp.export_index('NTPawn.SetHealth.SeqEvent'))
+    other_hp = context(dyncast(ntpawn, iter_var), pp.export_index('NTPawn.m_Health'), hp)
+    append_to_function(pp, 'NTPawn.SetHealth', [
+        ('jump_if_not', 'hp_end', andand(final_call(is_pc), native(0x77, final_call(get_p1), NONE))),
+        ('jump_if_not', 'hp_p2', native(0x72, tok(0x17), final_call(get_p1))),           # self == P1
+        ('jump_if_not', 'hp_end', native(0xB1, hp, floatconst(0.0))),                    # m_Health > 0
+        ('foreach', 'hp_copied', final_call(all_players, iter_var)),
+        ('jump_if_not', 'hp_next', native(0x77, iter_var, tok(0x17))),
+        let(other_hp, hp),
+        'hp_next', ITER_NEXT,
+        'hp_copied', ITER_POP,
+        ('jump', 'hp_end'),
+        'hp_p2',
+        ('jump_if_not', 'hp_hurt', native(0xB2, hp, floatconst(0.0))),                   # m_Health <= 0
+        ('jump_if_not', 'hp_end', native(0xB1, p1_hp, floatconst(0.0))),
+        let(hp, floatconst(1.0)),
+        context(final_call(get_p1), 0, virtual_call(pk, 'DealHealthDamage', native(0xAE, p1_hp, floatconst(1.0)))),
+        ('jump', 'hp_end'),
+        'hp_hurt',
+        ('jump_if_not', 'hp_end', native(0xB0, hp, p1_hp)),                              # m_Health < P1's
+        context(final_call(get_p1), 0, virtual_call(pk, 'SetHealth', hp)),
+        'hp_end'])
     pp.save(dst)
     print('wrote', dst)
 
