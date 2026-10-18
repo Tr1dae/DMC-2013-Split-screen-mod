@@ -40,8 +40,9 @@ your own copy of the game.
 
 | Key | Action |
 |---|---|
-| **F6** | Player 2 joins on the second controller and spawns next to player 1. Press again to teleport player 2 back to player 1. |
-| **F7** | Switch between side-by-side and top/bottom split |
+| **F6** | Player 2 joins on the second controller and spawns next to player 1. Press again to teleport player 2 back to player 1. After F8, F6 brings player 2 back. |
+| **F7** | Cycle the view: side by side → top/bottom → shared screen (one camera framing both players, *experimental*) |
+| **F8** | Drop player 2 (their Dante leaves) and show player 1 fullscreen, for example for platforming or QTE sections |
 
 - Player 1 uses the first controller, plus keyboard and mouse.
 - Player 2 uses the second controller.
@@ -51,7 +52,7 @@ your own copy of the game.
 
 - Single-player systems still assume one Dante. Player 2 can lock on to and target player 1, and the
   HUD, checkpoints and death handling are player 1's.
-- There is no way to remove player 2 yet without reloading.
+- The shared-screen camera is a first version: it can clip through walls when the players spread out, and player 2's stick directions follow player 2's own (hidden) camera.
 - Rumble and on-screen button prompts follow whichever controller was used last.
 - If player 1 uses the keyboard, controller buttons may pause for both players until a controller
   button is pressed.
@@ -59,8 +60,8 @@ your own copy of the game.
 ## Roadmap
 
 - [x] Second local player with their own camera and controller
-- [ ] Drop player 2 / single-screen mode for platforming and QTE sections
-- [ ] Shared camera mode, with both players on one screen
+- [x] Drop player 2 / single-screen mode for platforming and QTE sections
+- [~] Shared camera mode, with both players on one screen (first version)
 - [ ] Player 2 not targeting player 1
 - [ ] Shared HUD, health and death rules
 - [ ] Distinct character models for player 2

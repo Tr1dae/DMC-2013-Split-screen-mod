@@ -11,8 +11,8 @@ works around the places where DmC and QLOC's PC port assume a single player.
 
 | File | Change |
 |---|---|
-| `DevilGame/CookedPCConsole/Engine.upk` | Stored uncompressed. Two unused cheats are repurposed: `SetOnlineDebugLevel` becomes `AddPlayer <ControllerId>` and `RememberSpot` becomes `SplitAxis`. `Default2PSplitType` is set to `eSST_2P_VERTICAL`. |
-| `DevilGame/CookedPCConsole/DevilGame.upk` | Stored uncompressed. Changes `DVGameInfo.PostLogin` (see "Spawning player 2"). |
+| `DevilGame/CookedPCConsole/Engine.upk` | Stored uncompressed. Three unused cheats are repurposed: `SetOnlineDebugLevel` becomes `AddPlayer <ControllerId>`, `RememberSpot` becomes `SplitAxis` and `DebugPause` becomes `RemovePlayer`. Also changes `UpdateActiveSplitscreenType` and `PlayerController.GetPlayerViewPoint`. `Default2PSplitType` is set to `eSST_2P_VERTICAL`. |
+| `DevilGame/CookedPCConsole/DevilGame.upk` | Stored uncompressed. Changes `DVGameInfo.PostLogin` (see "Spawning player 2"). Two unused cheats are repurposed: `LockStormSword` becomes `Despawn` and `LockSpiralTrap` becomes `RestartPlayer`. |
 | `DevilGame/CookedPCConsole/NTGameFramework.upk` | Stored uncompressed. A one-byte change: `NTGameInfo_SP.SpawnPlayerPawn` passes `bNoCollisionFail=true` to `Spawn`. |
 | `Binaries/Win32/DMC-DevilMayCry.exe` | QLOC input fixes, plus ASLR switched off (see below). |
 | `DevilGame/Config/DefaultInput.ini` | F6 / F7 key bindings. |
@@ -71,8 +71,29 @@ QLOC's PC port lets any pad drive player 1:
   - the current map is a menu level
   - player 1 is in cinematic mode (cutscenes and QTEs)
   - the `FORCEFULLSCREEN` console command is toggled on (it defaults to off)
-- `SplitAxis` toggles `DesiredSplitscreenType` between vertical and horizontal, then calls
-  `LayoutPlayers`.
+- `SplitAxis` (F7) cycles `DesiredSplitscreenType`: vertical → horizontal → `SHARED_SCREEN` (6, i.e.
+  `eSST_MAX`). It then calls `LayoutPlayers`.
+- `UpdateActiveSplitscreenType` is rewritten with the stock rules, plus one more: with two players,
+  `SHARED_SCREEN` gives `eSST_NONE`. That layout has a single fullscreen entry in `SplitscreenInfo`, so
+  player 2's view gets zero size and only player 1's camera is drawn.
+- Shared camera: code appended to `PlayerController.GetPlayerViewPoint`, after DmC's camera has set
+  `out_Location`. It runs for player 1 when two players share one view and the game is not in
+  cinematic mode:
+  - It keeps the camera angle.
+  - It moves the camera by half of the P1→P2 vector, so it centres on the midpoint.
+  - It pulls the camera back along the camera→player-1 direction by `0.6 × distance`.
+
+## Dropping and rejoining (F8 / F6)
+
+- Destroying player 2's controller would run `NTPlayerController.Destroyed`, which calls
+  `NTGFxMovieManager.Get().RemoveIngameUIReferences()` on the global UI manager.
+- So F8 (`RemovePlayer`) keeps player 2 logged in. It:
+  - runs `ConsoleCommand("Despawn")` on player 2's controller, which reaches DevilGame's cheat:
+    `Outer.NTUnPossessAndDestroy()`
+  - switches to `SHARED_SCREEN`
+- F6 (`AddPlayer`) finds player 2 without a pawn and runs `ConsoleCommand("RestartPlayer")`. That
+  DevilGame cheat does the same `NTGameInfo_SP.RestartPlayer` + `PostRestartPlayer` as a mid-mission
+  join. F6 then restores the split and regroups.
 
 ## Diagnostics DLL (`native/`)
 

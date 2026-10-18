@@ -33,17 +33,36 @@ def find_import(pk, path):
     raise KeyError(path)
 
 
-def repurpose_cheat(pp, old_name, new_name, script):
-    """Give CheatManager.<old_name> new bytecode and rename it (export + class FuncMap)."""
+def repurpose_cheat(pp, old_name, new_name, script, cls='CheatManager'):
+    """Give <cls>.<old_name> new bytecode and rename it (export + class FuncMap)."""
     pk = pp.pkg
-    fn = pp.export_index('CheatManager.' + old_name)
+    fn = pp.export_index(cls + '.' + old_name)
     new = build_function(pp.export_data(fn), script, friendly=(pk.names.index(new_name), 0))
     pp.replace_export_data(fn, new)
     pp.rename_export(fn, new_name)
-    pp.replace_in_export(pp.export_index('CheatManager'),
+    pp.replace_in_export(pp.export_index(cls),
                          struct.pack('<iii', pk.names.index(old_name), 0, fn),
                          struct.pack('<iii', pk.names.index(new_name), 0, fn))
     return fn
+
+
+# DesiredSplitscreenType value meaning "two players, one fullscreen view of player 1" (shared
+# screen). eSST_MAX is never a real layout, so UpdateActiveSplitscreenType can tell it apart from
+# eSST_NONE, which still means "use the default 2-player split".
+SHARED_SCREEN = 6
+
+# UnrealScript native operator indices (Object.uc).
+OP_LESS_INT, OP_GREATER_INT, OP_EQ_INT, OP_NE_INT = 0x96, 0x97, 0x9A, 0x9B
+OP_EQ_OBJ, OP_NOT_BOOL, OP_MUL_FLOAT = 0x72, 0x81, 0xAB
+OP_MUL_VEC_FLOAT, OP_ADD_VEC, OP_SUB_VEC, OP_VSIZE, OP_NORMAL = 0xD4, 0xD7, 0xD8, 0xE1, 0xE2
+
+
+def int_eq_byte(e, v):
+    return native(OP_EQ_INT, byte_to_int(e), byte_to_int(byteconst(v)))
+
+
+def int_ne_byte(e, v):
+    return native(OP_NE_INT, byte_to_int(e), byte_to_int(byteconst(v)))
 
 
 def build_engine(src, dst):
@@ -92,35 +111,101 @@ def build_engine(src, dst):
                         final_call(SetRotation, context(my_pawn(), RotationP, inst(RotationP)), EMPTY))
     face_pc = context(new_pc(), E('Actor.SetRotation.ReturnValue'),
                       final_call(SetRotation, context(inst(Outer), RotationP, inst(RotationP)), EMPTY))
+    CCRet = E('PlayerController.ConsoleCommand.ReturnValue')
+
+    def console(pc, command):
+        """pc.ConsoleCommand(command): runs an exec on that player's own exec chain (its CheatManager)."""
+        return eat_return(CCRet, context(pc, CCRet, virtual_call(pk, 'ConsoleCommand', strconst(command), EMPTY)))
+
+    desired = lambda: vc_prop('GameViewportClient.DesiredSplitscreenType')
+    active = lambda: vc_prop('GameViewportClient.ActiveSplitscreenType')
+    layout = lambda: context(VC(), 0, virtual_call(pk, 'LayoutPlayers'))
     script = assemble([
         # Join if this pad has no player yet; pressing it again just regroups.
-        ('jump_if_not', 'joined', native(0x72, new_lp(), NONE)),       # ==
+        ('jump_if_not', 'joined', native(OP_EQ_OBJ, new_lp(), NONE)),
         create,
         'joined',
+        # Dropped with F8 (controller kept, Dante despawned)? Respawn through DevilGame's
+        # RestartPlayer cheat on that player's own controller, and go back to split screen.
+        ('jump_if_not', 'alive', native(OP_EQ_OBJ, new_pawn(), NONE)),
+        console(new_pc(), 'RestartPlayer'),
+        let(desired(), byteconst(0)),
+        'alive',
         # Spawn starts are often far away or in unloaded level chunks: put them next to us.
-        ('jump_if_not', 'placed', native(0x81, try_place(120, 0, 0))),  # !
-        ('jump_if_not', 'placed', native(0x81, try_place(-120, 0, 0))),
-        ('jump_if_not', 'placed', native(0x81, try_place(0, 120, 0))),
+        ('jump_if_not', 'placed', native(OP_NOT_BOOL, try_place(120, 0, 0))),
+        ('jump_if_not', 'placed', native(OP_NOT_BOOL, try_place(-120, 0, 0))),
+        ('jump_if_not', 'placed', native(OP_NOT_BOOL, try_place(0, 120, 0))),
         try_place(0, 0, 150),
         'placed',
         face_pawn,
         face_pc,
+        layout(),
         RETURN_NOTHING, END])
     repurpose_cheat(pp, 'SetOnlineDebugLevel', 'AddPlayer', script)
 
-    # SplitAxis
-    byte_to_int = lambda e: cat(raw([0x38, 0x3A]), e)
-    is_vertical = native(0x9A, byte_to_int(vc_prop('GameViewportClient.ActiveSplitscreenType')),
-                         byte_to_int(raw([0x24, ESST_2P_VERTICAL])))                      # int ==
-    set_h = cat(tok(0x0F), vc_prop('GameViewportClient.DesiredSplitscreenType'), raw([0x24, ESST_2P_HORIZONTAL]))
-    set_v = cat(tok(0x0F), vc_prop('GameViewportClient.DesiredSplitscreenType'), raw([0x24, ESST_2P_VERTICAL]))
-    layout = context(VC(), 0, virtual_call(pk, 'LayoutPlayers'))
-    if_len = 3 + is_vertical.mem
-    else_at = if_len + set_h.mem + 3
-    end_at = else_at + set_v.mem
-    script = cat(jump_if_not(else_at, is_vertical), set_h, tok(0x06), u16(end_at), set_v,
-                 layout, RETURN_NOTHING, END)
+    # RemovePlayer (F8): despawn player 2's Dante via DevilGame's Despawn cheat on their own
+    # controller, and show player 1 fullscreen. The controller stays logged in: destroying it would
+    # run NTPlayerController.Destroyed, which clears the *global* in-game UI references.
+    OuterImp, GamePlayers = Outer, E('Engine.GamePlayers')
+
+    def gp(vc):
+        return context(context(vc, OuterImp, inst(OuterImp)), GamePlayers, inst(GamePlayers))
+
+    def gp_pc(vc, i):
+        return context(array_elem(tok(0x25 + i), gp(vc)), ActorP, inst(ActorP))            # IntZero / IntOne
+    script = assemble([
+        ('jump_if_not', 'end', native(OP_GREATER_INT, cat(tok(0x36), gp(VC())), tok(0x26))),  # Length > 1
+        console(gp_pc(VC(), 1), 'Despawn'),
+        let(desired(), byteconst(SHARED_SCREEN)),
+        layout(),
+        'end', RETURN_NOTHING, END])
+    repurpose_cheat(pp, 'DebugPause', 'RemovePlayer', script)
+
+    # SplitAxis (F7): side by side -> top/bottom -> shared screen -> side by side.
+    script = assemble([
+        ('jump_if_not', 'not_v', int_eq_byte(active(), ESST_2P_VERTICAL)),
+        let(desired(), byteconst(ESST_2P_HORIZONTAL)), ('jump', 'layout'),
+        'not_v',
+        ('jump_if_not', 'not_h', int_eq_byte(active(), ESST_2P_HORIZONTAL)),
+        let(desired(), byteconst(SHARED_SCREEN)), ('jump', 'layout'),
+        'not_h',
+        let(desired(), byteconst(ESST_2P_VERTICAL)),
+        'layout', layout(), RETURN_NOTHING, END])
     repurpose_cheat(pp, 'RememberSpot', 'SplitAxis', script)
+
+    # UpdateActiveSplitscreenType: stock rules, plus SHARED_SCREEN -> eSST_NONE for two players.
+    # With eSST_NONE, SplitscreenInfo has a single fullscreen entry, so LayoutPlayers gives player 2
+    # a zero-size view and only player 1's camera is drawn.
+    fn = E('GameViewportClient.UpdateActiveSplitscreenType')
+    st = E('GameViewportClient.UpdateActiveSplitscreenType.SplitType')
+    n = lambda: cat(tok(0x36), context(inst(OuterImp), GamePlayers, inst(GamePlayers)))
+    two = raw([0x2C, 2])
+    three = raw([0x2C, 3])
+    set_st = lambda e: let(local(st), e)
+    script = assemble([
+        set_st(inst(E('GameViewportClient.DesiredSplitscreenType'))),
+        ('jump_if_not', 'many', native(OP_LESS_INT, n(), two)),
+        set_st(byteconst(0)), ('jump', 'done'),
+        'many',
+        ('jump_if_not', 'not2', native(OP_EQ_INT, n(), two)),
+        ('jump_if_not', 'not_shared', int_eq_byte(local(st), SHARED_SCREEN)),
+        set_st(byteconst(0)), ('jump', 'done'),
+        'not_shared',
+        ('jump_if_not', 'done', andand(int_ne_byte(local(st), 1), int_ne_byte(local(st), 2))),
+        set_st(inst(E('GameViewportClient.Default2PSplitType'))), ('jump', 'done'),
+        'not2',
+        ('jump_if_not', 'not3', native(OP_EQ_INT, n(), three)),
+        ('jump_if_not', 'done', andand(int_ne_byte(local(st), 3), int_ne_byte(local(st), 4))),
+        set_st(inst(E('GameViewportClient.Default3PSplitType'))), ('jump', 'done'),
+        'not3',
+        set_st(byteconst(5)),
+        'done',
+        let(inst(E('GameViewportClient.ActiveSplitscreenType')), local(st)),
+        RETURN_NOTHING, END])
+    pp.replace_export_data(fn, build_function(pp.export_data(fn), script))
+
+    build_shared_camera(pp, E, OuterImp, GamePlayers, LocalPlayerCls, ViewportClient, Player,
+                        PawnP, LocationP, ActorP)
 
     # Side-by-side by default.
     n = pk.names.index
@@ -129,6 +214,59 @@ def build_engine(src, dst):
                          struct.pack('<iiii', n('ESplitScreenType'), 0, n('eSST_2P_VERTICAL'), 0))
     pp.save(dst)
     print('wrote', dst)
+
+
+SHARED_CAMERA_PULLBACK = 0.6   # extra camera distance per unit of distance between the players
+
+
+def build_shared_camera(pp, E, OuterImp, GamePlayers, LocalPlayerCls, ViewportClient, Player,
+                        PawnP, LocationP, ActorP):
+    """Shared screen camera, appended to PlayerController.GetPlayerViewPoint (after DmC's camera
+    has produced out_Location):
+
+        if (VC.Outer.GamePlayers.Length >= 2 && VC.ActiveSplitscreenType == eSST_NONE
+            && !bCinematicMode && self == GamePlayers[0].Actor
+            && Pawn != None && GamePlayers[1].Actor.Pawn != None)
+        {
+            D = P2.Location - Pawn.Location;
+            out_Location += D * 0.5 + Normal(out_Location - Pawn.Location) * (VSize(D) * PULLBACK);
+        }
+
+    i.e. keep player 1's camera angle, move it to the midpoint of both players and pull it back as
+    they spread apart. Cutscenes (cinematic mode) are left alone."""
+    pk = pp.pkg
+    fn = E('PlayerController.GetPlayerViewPoint')
+    out_loc = E('PlayerController.GetPlayerViewPoint.out_Location')
+    from disasm import parse_function
+    f = parse_function(pk, fn)
+    s = f['script']
+    assert s[-3:] == b'\x04\x0b\x53', s[-3:].hex()
+    body = s[:-3]
+    body_mem = f['bsize'] - 3
+
+    vc = context(dyncast(LocalPlayerCls, inst(Player)), ViewportClient, inst(ViewportClient))
+    gp = lambda: context(context(vc, OuterImp, inst(OuterImp)), GamePlayers, inst(GamePlayers))
+    gp_pc = lambda i: context(array_elem(tok(0x25 + i), gp()), ActorP, inst(ActorP))
+    my_loc = lambda: context(inst(PawnP), LocationP, inst(LocationP))
+    p2_pawn = lambda: context(gp_pc(1), PawnP, inst(PawnP))
+    delta = lambda: native(OP_SUB_VEC, context(p2_pawn(), LocationP, inst(LocationP)), my_loc())
+
+    cond = native(0x99, cat(tok(0x36), gp()), raw([0x2C, 2]))                                   # Length >= 2
+    cond = andand(cond, int_eq_byte(context(vc, E('GameViewportClient.ActiveSplitscreenType'),
+                                            inst(E('GameViewportClient.ActiveSplitscreenType'))), 0))
+    cond = andand(cond, native(OP_NOT_BOOL, boolvar(inst(E('PlayerController.bCinematicMode')))))
+    cond = andand(cond, native(OP_EQ_OBJ, tok(0x17), gp_pc(0)))                                 # self
+    cond = andand(cond, native(0x77, inst(PawnP), NONE))                                        # !=
+    cond = andand(cond, native(0x77, p2_pawn(), NONE))
+    shift = native(OP_MUL_VEC_FLOAT, delta(), floatconst(0.5))
+    pull = native(OP_MUL_VEC_FLOAT, native(OP_NORMAL, native(OP_SUB_VEC, outvar(out_loc), my_loc())),
+                  native(OP_MUL_FLOAT, native(OP_VSIZE, delta()), floatconst(SHARED_CAMERA_PULLBACK)))
+    extra = assemble([
+        ('jump_if_not', 'end', cond),
+        let(outvar(out_loc), native(OP_ADD_VEC, native(OP_ADD_VEC, outvar(out_loc), shift), pull)),
+        'end', RETURN_NOTHING, END], base=body_mem)
+    script = Code(body, body_mem) + extra
+    pp.replace_export_data(fn, build_function(pp.export_data(fn), script))
 
 
 def build_devilgame(src, dst):
@@ -165,6 +303,25 @@ def build_devilgame(src, dst):
                        enable, restart, post_restart,
                        'end', RETURN_NOTHING, END])
     pp.replace_export_data(fn, build_function(old, script))
+
+    # Cheats run on a player's own controller (Outer) by Engine's AddPlayer/RemovePlayer via
+    # PlayerController.ConsoleCommand. Repurposes two unused upgrade-lock cheats.
+    outer = find_import(pk, 'Core.Object.Outer')
+    ntpc = find_import(pk, 'NTGameFramework.NTPlayerController')
+    nt_pawn = find_import(pk, 'NTGameFramework.NTPlayerController.m_NTPawn')
+    world, game = find_import(pk, 'Engine.Actor.WorldInfo'), find_import(pk, 'Engine.WorldInfo.Game')
+    # Despawn: NTPlayerController(Outer).NTUnPossessAndDestroy()
+    script = assemble([context(inst(outer), 0, virtual_call(pk, 'NTUnPossessAndDestroy')), RETURN_NOTHING, END])
+    repurpose_cheat(pp, 'LockStormSword', 'Despawn', script, cls='DVExecFunctions')
+    # RestartPlayer: if (NTPlayerController(Outer).m_NTPawn == None) { the PostLogin join spawn }
+    no_pawn = native(0x72, context(dyncast(ntpc, inst(outer)), nt_pawn, inst(nt_pawn)), NONE)
+    game_obj = context(context(inst(outer), world, inst(world)), game, inst(game))
+    script = assemble([
+        ('jump_if_not', 'end', no_pawn),
+        context(game_obj, 0, final_call(restart_sp, inst(outer))),
+        context(inst(outer), 0, virtual_call(pk, 'PostRestartPlayer')),
+        'end', RETURN_NOTHING, END])
+    repurpose_cheat(pp, 'LockSpiralTrap', 'RestartPlayer', script, cls='DVExecFunctions')
     pp.save(dst)
     print('wrote', dst)
 

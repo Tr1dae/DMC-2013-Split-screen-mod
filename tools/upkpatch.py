@@ -135,14 +135,29 @@ EMPTY = tok(0x4A)  # omitted optional parameter
 def vect(x, y, z): return tok(0x23) + raw(struct.pack('<fff', x, y, z))
 
 
-def assemble(items):
+def outvar(i): return tok(0x48) + obj(i)
+def let(lhs, rhs): return cat(tok(0x0F), lhs, rhs)
+def strconst(s): return cat(tok(0x1F), raw(s.encode('latin1') + b'\0'))
+def byteconst(v): return raw([0x24, v])
+def byte_to_int(e): return cat(raw([0x38, 0x3A]), e)
+def boolvar(e): return cat(tok(0x2D), e)
+def array_elem(index, array): return cat(tok(0x10), index, array)
+def eat_return(ret_prop, e): return cat(tok(0x0E), obj(ret_prop), e)
+def andand(a, b):
+    """a && b with short-circuit (the skip covers b and the closing EndFunctionParms)."""
+    return cat(tok(0x82), a, tok(0x18), u16(b.mem + 1), b, tok(0x16))
+def floatconst(f): return tok(0x1E) + raw(struct.pack('<f', f))
+
+
+def assemble(items, base=0):
     """Lay out statements with labels. Items are Code, a label string, or
-    ('jump_if_not', label, cond) / ('jump', label). Offsets are in memory bytes."""
+    ('jump_if_not', label, cond) / ('jump', label). Offsets are in memory bytes; `base` is where
+    the first item lands inside the function (for code appended after existing bytecode)."""
     def size(it):
         if isinstance(it, str): return 0
         if isinstance(it, tuple): return 3 + (it[2].mem if it[0] == 'jump_if_not' else 0)
         return it.mem
-    labels, pos = {}, 0
+    labels, pos = {}, base
     for it in items:
         if isinstance(it, str): labels[it] = pos
         pos += size(it)

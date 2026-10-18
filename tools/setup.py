@@ -20,10 +20,12 @@ ORIGINALS = {
 }
 
 BINDINGS = [
-    '; CoopMod: F6 spawns player 2 on the second gamepad (ControllerId 1)',
+    '; CoopMod: F6 player 2 joins on the second gamepad (ControllerId 1) / respawns / regroups',
     'Bindings=(Name="F6",\t\t\tCommand="AddPlayer 1")',
-    '; CoopMod: F7 toggles side-by-side / top-bottom split',
+    '; CoopMod: F7 cycles side-by-side / top-bottom / shared screen',
     'Bindings=(Name="F7",\t\t\tCommand="SplitAxis")',
+    '; CoopMod: F8 drops player 2 (single player view until F6)',
+    'Bindings=(Name="F8",\t\t\tCommand="RemovePlayer")',
 ]
 
 
