@@ -316,7 +316,10 @@ static void maybe_start_trace(void *fn)
  */
 static const char *g_watchNames[] = { "SetPause", "ClearPause", "ConditionalPause", "PauseGame",
     "ResumeGame", "Tut_ShowBox", "Tut_HideBox", "OnControllerChanged", "OnLostFocusPause",
-    "Handle_PausePressed", "DisplayGameMenu", "DisplayIngameDialog", "SetCinematicMode", 0 };
+    "Handle_PausePressed", "DisplayGameMenu", "DisplayIngameDialog", "SetCinematicMode", "AddPlayer",
+    /* markers: harmless calls the mod's AddPlayer makes at each early exit (logged only from there) */
+    "IsPrimaryPlayer", "GetSplitscreenPlayerCount", 0 };
+#define WATCH_FIRST_MARKER 14
 static int g_watchIdx[32];
 static char g_watchPath[MAX_PATH];
 
@@ -339,7 +342,13 @@ static void watch_call(const char *kind, DWORD self, DWORD fn, DWORD stack)
     FILE *out;
     SYSTEMTIME t;
     for (w = 0; g_watchNames[w]; w++) if (g_watchIdx[w] == idx) break;
-    if (!g_watchNames[w] || fopen_s(&out, g_watchPath, "a") || !out) return;
+    if (!g_watchNames[w]) return;
+    if (w >= WATCH_FIRST_MARKER) {
+        if (!stack) return;
+        obj_name(rd(stack + 0x10), f, sizeof f);
+        if (strcmp(f, "AddPlayer")) return;
+    }
+    if (fopen_s(&out, g_watchPath, "a") || !out) return;
     GetLocalTime(&t);
     obj_name(fn, a, sizeof a);
     obj_name(rd(fn + OBJ_OUTER), b, sizeof b);

@@ -150,11 +150,21 @@ def build_engine(src, dst):
         # SetCinematicMode(bInCinematicMode, bHidePlayer, bAffectsHUD=false, Movement, Turning, Buttons)
         b = TRUE if on else tok(0x28)
         return context(pc, 0, virtual_call(pk, 'SetCinematicMode', b, b, tok(0x28), TRUE, TRUE, TRUE))
+    # Diagnostics: harmless calls the xinput proxy's watch log records when made from AddPlayer, so
+    # coop_watch.txt shows why a regroup was skipped (world still paused / player 1 in cinematic mode).
+    marker_paused = eat_return(E('PlayerController.IsPrimaryPlayer.ReturnValue'),
+                               context(inst(Outer), E('PlayerController.IsPrimaryPlayer.ReturnValue'),
+                                       final_call(E('PlayerController.IsPrimaryPlayer'))))
+    marker_cine = eat_return(E('PlayerController.GetSplitscreenPlayerCount.ReturnValue'),
+                             context(inst(Outer), E('PlayerController.GetSplitscreenPlayerCount.ReturnValue'),
+                                     virtual_call(pk, 'GetSplitscreenPlayerCount')))
     script = assemble([
         # AddPlayer 200: regroup only - bring player 2 (if any) next to player 1, never create.
         # DevilGame runs this after every pause/popup closes and every cutscene ends.
         ('jump_if_not', 'not_regroup', native(OP_EQ_INT, local(cid), raw([0x2C, 200]))),
-        ('jump_if_not', 'regroup_end', native(OP_NOT_BOOL, paused())),
+        ('jump_if_not', 'regroup_running', paused()),
+        marker_paused, ('jump', 'regroup_end'),
+        'regroup_running',
         ('jump_if_not', 'no_join', str_eq(pending, 'join')),
         let(pending, strconst('')), console(inst(Outer), 'AddPlayer 1'),
         'no_join',
@@ -167,7 +177,9 @@ def build_engine(src, dst):
         # Player 2 follows player 1 out of a cutscene (unless player 1 is still in one, e.g. paused
         # mid-cutscene), then regroups.
         ('jump_if_not', 'regroup_end', native(OP_GREATER_INT, cat(tok(0x36), gp(VC())), tok(0x26))),
-        ('jump_if_not', 'regroup_end', native(OP_NOT_BOOL, boolvar(context(inst(Outer), bCine, inst(bCine))))),
+        ('jump_if_not', 'regroup_free', boolvar(context(inst(Outer), bCine, inst(bCine)))),
+        marker_cine, ('jump', 'regroup_end'),
+        'regroup_free',
         set_cinematic(gp_pc(VC(), 1), False),
         console(gp_pc(VC(), 1), 'Teleport'),
         'regroup_end', RETURN_NOTHING,
@@ -542,6 +554,21 @@ def build_ntgameframework(src, dst):
     ret_false = raw([0x04, 0x28])
     insert_code(pp, 'NTAIController.ConsiderOtherAsEnemy', 0,
                 lambda reloc: cat(jump_if_not(3 + friendly.mem + ret_false.mem, friendly), ret_false))
+
+    # The pause menu is one shared UI bound to player 1, so its Resume only releases player 1's pause.
+    # When player 2 pressed Start, their own pause (CanUnpauseExternalUI on player 2) was never
+    # released and the world stayed frozen. Player 2's Start opens / closes player 1's menu instead:
+    #   if (P1 != None && m_NTPawn != P1) return NTPlayerController(P1.Owner).Handle_PausePressed(bIsDebug);
+    owner = find_import(pk, 'Engine.Actor.Owner')
+    ntpc = pp.export_index('NTPlayerController')
+    hp_ret = pp.export_index('NTPlayerController.Handle_PausePressed.ReturnValue')
+    is_debug = pp.export_index('NTPlayerController.Handle_PausePressed.bIsDebug')
+    not_p1 = andand(native(0x77, final_call(get_p1), NONE),
+                    native(0x77, inst(m_nt_pawn), final_call(get_p1)))
+    p1_pc = dyncast(ntpc, context(final_call(get_p1), owner, inst(owner)))
+    forward = cat(tok(0x04), context(p1_pc, hp_ret, virtual_call(pk, 'Handle_PausePressed', local(is_debug))))
+    insert_code(pp, 'NTPlayerController.Handle_PausePressed', 0,
+                lambda reloc: cat(jump_if_not(3 + not_p1.mem + forward.mem, not_p1), forward))
     pp.save(dst)
     print('wrote', dst)
 
