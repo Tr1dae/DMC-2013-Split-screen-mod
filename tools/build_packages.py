@@ -455,6 +455,7 @@ def build_devilgame(src, dst):
     p1 = lambda: static_call(actor_cls, 0, final_call(get_p1))
     me = lambda: context(dyncast(ntpc, inst(outer)), nt_pawn, inst(nt_pawn))
     m_health = find_import(pk, 'NTGameFramework.NTPawn.m_Health')
+    m_max_health = find_import(pk, 'NTGameFramework.NTPawn.m_MaxHealth')
     p1_health = lambda: context(p1(), m_health, inst(m_health))
 
     def try_place(dx, dy, dz):
@@ -469,6 +470,7 @@ def build_devilgame(src, dst):
         context(me(), 0, final_call(set_rot, context(p1(), rot, inst(rot)), EMPTY)),
         # Shared health (see NTGameFramework's NTPawn.SetHealth): take player 1's current health.
         ('jump_if_not', 'healthy', native(0xB1, p1_health(), floatconst(0.0))),
+        let(context(me(), m_max_health, inst(m_max_health)), context(p1(), m_max_health, inst(m_max_health))),
         let(context(me(), m_health, inst(m_health)), p1_health()),
         'healthy',
         RETURN_NOTHING, END])
@@ -501,6 +503,24 @@ def build_devilgame(src, dst):
     is_p2 = andand(native(0x77, final_call(get_p1), NONE), native(0x77, final_call(get_p1), tok(0x17)))
     insert_code(pp, 'DVPawn_Player.PostPossessed', 0,
                 lambda reloc: jump_if_not(reloc(0x1FD), native(0x81, is_p2)))
+    # Co-op health setting (pause menu): players take DamageScale x damage, so the shared pool
+    # works like a smaller health bar. The value lives in the class defaults of an unused test
+    # Kismet action (DVSeqAct_TestGunFu.m_ChargeTimer, 0 by default = off), which outlive level
+    # loads. "DamageScale <x>" (repurposed EarnDTPoints cheat) sets it:
+    #   class'DVSeqAct_TestGunFu'.default.m_ChargeTimer = PointsEarned;
+    gunfu, charge = E('DVSeqAct_TestGunFu'), E('DVSeqAct_TestGunFu.m_ChargeTimer')
+    dmg_scale = lambda: static_call(gunfu, charge, cat(tok(0x02), obj(charge)))
+    repurpose_cheat(pp, 'EarnDTPoints', 'DamageScale', assemble([
+        let(dmg_scale(), local(E('DVExecFunctions.EarnDTPoints.PointsEarned'))),
+        RETURN_NOTHING, END]), cls='DVExecFunctions')
+    #   DVPawn.DealHealthDamage: if (IsPlayerControlled() && scale > 0) fHealthDamage *= scale;
+    dmg = local(E('DVPawn.DealHealthDamage.fHealthDamage'))
+    is_pc_dg = find_import(pk, 'NTGameFramework.NTPawn.IsPlayerControlled')
+    scaled = andand(final_call(is_pc_dg), native(0xB1, dmg_scale(), floatconst(0.0)))
+    scale_it = let(dmg, native(OP_MUL_FLOAT, dmg, dmg_scale()))
+    insert_code(pp, 'DVPawn.DealHealthDamage', 0,
+                lambda reloc: cat(jump_if_not(3 + scaled.mem + scale_it.mem, scaled), scale_it))
+
     # Enemy retargeting (NTGameFramework's NTAIController.ConsiderOtherAsBuddy, see there) runs
     # every frame from the AI controller's Tick:  final NTAIController.ConsiderOtherAsBuddy(None);
     append_to_function(pp, 'DVAIController.Tick',
@@ -633,21 +653,28 @@ def build_ntgameframework(src, dst):
     #         NTPawn(SeqEvent).m_Health = m_Health;
     #     } else if (m_Health <= 0) {             // a lethal hit on player 2 kills player 1 instead
     #       if (P1.m_Health > 0) { m_Health = 1; P1.DealHealthDamage(P1.m_Health + 1); }
-    #     } else if (m_Health < P1.m_Health) P1.SetHealth(m_Health);   // player 2 took damage
+    #     } else if (m_Health < P1.m_Health                          // player 2 took damage, or
+    #                || OldHealthFraction == P1.m_Health / P1.m_MaxHealth)   // was in sync: a heal
+    #       P1.SetHealth(m_Health);
     #   }
-    # Copies write m_Health directly, so they never re-enter SetHealth. Player 2's own heals stay
-    # local (a fresh player 2 spawns at full health and must not refill the pool); DevilGame's
-    # Teleport cheat resets player 2 to the pool on every join and regroup.
+    # Copies (health and max health) write the fields directly, so they never re-enter SetHealth.
+    # A fresh player 2 spawns at full health without being in sync, so joining cannot refill the
+    # pool; DevilGame's Teleport cheat puts player 2 on the pool on every join and regroup.
     hp = inst(pp.export_index('NTPawn.m_Health'))
     p1_hp = context(final_call(get_p1), pp.export_index('NTPawn.m_Health'), hp)
     iter_var = local(pp.export_index('NTPawn.SetHealth.SeqEvent'))
     other_hp = context(dyncast(ntpawn, iter_var), pp.export_index('NTPawn.m_Health'), hp)
+    max_hp = inst(pp.export_index('NTPawn.m_MaxHealth'))
+    other_max = context(dyncast(ntpawn, iter_var), pp.export_index('NTPawn.m_MaxHealth'), max_hp)
+    p1_max = context(final_call(get_p1), pp.export_index('NTPawn.m_MaxHealth'), max_hp)
+    old_frac = local(pp.export_index('NTPawn.SetHealth.OldHealthFraction'))
     append_to_function(pp, 'NTPawn.SetHealth', [
         ('jump_if_not', 'hp_end', andand(final_call(is_pc), native(0x77, final_call(get_p1), NONE))),
         ('jump_if_not', 'hp_p2', native(0x72, tok(0x17), final_call(get_p1))),           # self == P1
         ('jump_if_not', 'hp_end', native(0xB1, hp, floatconst(0.0))),                    # m_Health > 0
         ('foreach', 'hp_copied', final_call(all_players, iter_var)),
         ('jump_if_not', 'hp_next', native(0x77, iter_var, tok(0x17))),
+        let(other_max, max_hp),
         let(other_hp, hp),
         'hp_next', ITER_NEXT,
         'hp_copied', ITER_POP,
@@ -659,7 +686,11 @@ def build_ntgameframework(src, dst):
         context(final_call(get_p1), 0, virtual_call(pk, 'DealHealthDamage', native(0xAE, p1_hp, floatconst(1.0)))),
         ('jump', 'hp_end'),
         'hp_hurt',
-        ('jump_if_not', 'hp_end', native(0xB0, hp, p1_hp)),                              # m_Health < P1's
+        ('jump_if_not', 'hp_heal', native(0xB0, hp, p1_hp)),                             # m_Health < P1's
+        ('jump', 'hp_pool'),
+        'hp_heal',
+        ('jump_if_not', 'hp_end', native(0xB4, old_frac, native(0xAC, p1_hp, p1_max))),  # float ==, /
+        'hp_pool',
         context(final_call(get_p1), 0, virtual_call(pk, 'SetHealth', hp)),
         'hp_end'])
     pp.save(dst)

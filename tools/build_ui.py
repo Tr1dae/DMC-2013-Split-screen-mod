@@ -8,12 +8,14 @@ the class's DoInitAction that wraps Hook_InitAsMainGame and attaches extra CLIK 
   * "SplitScreen Mod" under "Main Menu" opens a submenu in place of the normal buttons:
       Split Screen: On/Off           -> ExecConsoleCommand "AddPlayer 1" / "RemovePlayer"
       Camera: Side by Side / Top & Bottom / Shared Screen -> "AddPlayer 10<view>"
+      Health: 1x / 0.75x / 0.5x / 0.25x  -> "DamageScale <1 / 1.333 / 2 / 4>" (shared health pool)
       Back
   * The buttons call the game's own ExecConsoleCommand UI callback
     (DVGFxMovieHandler_IngameUI_Callbacks), which runs a console command on player 1. Joining or
     dropping while paused is only recorded by the Engine side and carried out on resume.
   * B / Esc / Start on the SplitScreen Mod page returns to the pause page.
-  * Menu state lives in _global.coopP2 / _global.coopView, which persist while the game runs.
+  * Menu state lives in _global.coopP2 / coopView / coopHealth, which persist while the game runs
+    (as does the DamageScale value on the game side).
 
 Usage: python build_ui.py <original Dante_Archetypes_SF.upk> <output upk>
 """
@@ -26,6 +28,8 @@ from upkpatch import PatchedPackage
 MOVIE = 'DevilIngameUI.IngameMenu'
 CLASS_SPRITE = 66                 # DoInitAction that defines Scripts.IngameMenu
 VIEW_SIDE, VIEW_TOP, VIEW_SHARED = 2, 1, 6   # DesiredSplitscreenType values (6 = mod's shared screen)
+# Health setting: (label, damage scale players take). Fewer hit points = more damage per hit.
+HEALTH_LEVELS = [('1x', '1'), ('0.75x', '1.333'), ('0.5x', '2'), ('0.25x', '4')]
 
 R_ARG, R_PM, R_TMP = Reg(2), Reg(3), Reg(4)
 
@@ -53,7 +57,7 @@ def console(cmd):
 def menu_code():
     stock = ['button0%d' % i for i in range(1, 8)]
     coop = [('coopB0', 61, 'onCoopMenu'), ('coopB1', 62, 'onCoopSplit'),
-            ('coopB2', 63, 'onCoopCamera'), ('coopB3', 64, 'onCoopBack')]
+            ('coopB2', 63, 'onCoopCamera'), ('coopB4', 64, 'onCoopHealth'), ('coopB3', 65, 'onCoopBack')]
 
     setup = set_reg(R_PM, pm())
     setup += if_not(eq(member(val(R_PM), 'coopB0'), val(UNDEFINED)), 'have')
@@ -76,6 +80,9 @@ def menu_code():
     setup += if_not(eq(glob('coopView'), val(UNDEFINED)), 'viewset')
     setup += set_member(var('_global'), 'coopView', VIEW_SIDE)
     setup += label('viewset')
+    setup += if_not(eq(glob('coopHealth'), val(UNDEFINED)), 'healthset')
+    setup += set_member(var('_global'), 'coopHealth', 0)
+    setup += label('healthset')
     setup += stmt(call_method(val(THIS), 'coopShow', False, False))
 
     labels = set_reg(R_PM, pm())
@@ -88,7 +95,12 @@ def menu_code():
     labels += label('nt') + if_not(eq(val(R_TMP), val(VIEW_SHARED)), 'ns')
     labels += set_member(member(val(R_PM), 'coopB2'), 'label', 'Camera: Shared Screen') + jump('end')
     labels += label('ns') + set_member(member(val(R_PM), 'coopB2'), 'label', 'Camera: Side by Side')
-    labels += label('end')
+    labels += label('end') + set_reg(R_TMP, glob('coopHealth'))
+    for i, (name, _) in enumerate(HEALTH_LEVELS):
+        labels += if_not(eq(val(R_TMP), val(i)), 'h%d' % i)
+        labels += set_member(member(val(R_PM), 'coopB4'), 'label', 'Health: ' + name) + jump('hdone')
+        labels += label('h%d' % i)
+    labels += label('hdone')
 
     sound = stmt(call_method(val(THIS), 'PlayForwardSound'))
     view_cmd = add(val('AddPlayer 10'), glob('coopView'))          # "AddPlayer 102" etc.
@@ -108,6 +120,17 @@ def menu_code():
     camera += label('c3') + if_not(eq(glob('coopP2'), val(True)), 'c4')
     camera += external_call('ExecConsoleCommand', view_cmd)
     camera += label('c4') + stmt(call_method(val(THIS), 'coopLabels'))
+
+    # Health cycles 1x -> 0.75x -> 0.5x -> 0.25x -> 1x and applies at once (paused or not).
+    health = sound + set_reg(R_TMP, glob('coopHealth'))
+    for i in range(len(HEALTH_LEVELS)):
+        nxt = (i + 1) % len(HEALTH_LEVELS)
+        health += if_not(eq(val(R_TMP), val(i)), 'c%d' % i)
+        health += set_member(var('_global'), 'coopHealth', nxt)
+        health += console('DamageScale ' + HEALTH_LEVELS[nxt][1]) + jump('cdone')
+        health += label('c%d' % i)
+    health += set_member(var('_global'), 'coopHealth', 0) + console('DamageScale 1')
+    health += label('cdone') + stmt(call_method(val(THIS), 'coopLabels'))
 
     def show_body():
         # coopShow(on = r2, focus = r3); r4 = PauseMenu
@@ -137,6 +160,7 @@ def menu_code():
     code += method('onCoopBack', ['event'], sound + stmt(call_method(val(THIS), 'coopShow', False, True)))
     code += method('onCoopSplit', ['event'], split)
     code += method('onCoopCamera', ['event'], camera)
+    code += method('onCoopHealth', ['event'], health)
     # B / Esc / Start on the SplitScreen Mod page goes back to the pause page instead of resuming.
     code += set_member(proto(), 'coopOrigBack', member(proto(), 'BackButtonPressed'))
     code += method('BackButtonPressed', [],
