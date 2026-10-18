@@ -227,9 +227,11 @@ def build_shared_camera(pp, E, OuterImp, GamePlayers, LocalPlayerCls, ViewportCl
             && !bCinematicMode && self == GamePlayers[0].Actor)
         {
             // DmC pawns are owned by their controller (NTPawn.PossessedBy -> SetOwner) but
-            // Controller.Pawn is never set, so look player 2's pawn up by owner.
-            foreach DynamicActors(class'Pawn', TheViewTarget)
-                if (TheViewTarget.Owner == GamePlayers[1].Actor) break;   // (found)
+            // Controller.Pawn is never set, and NTPawn is not an Engine.Pawn: look player 2's
+            // pawn up among all dynamic actors by owner and by player 1's pawn class.
+            foreach DynamicActors(class'Actor', TheViewTarget)
+                if (TheViewTarget.Owner == GamePlayers[1].Actor
+                    && TheViewTarget.Class == NT_GetLocalPlayerPawn().Class) break;   // (found)
             P1 = NT_GetLocalPlayerPawn();
             D = P2.Location - P1.Location;
             out_Location += D * 0.5 + Normal(out_Location - P1.Location) * (VSize(D) * PULLBACK);
@@ -263,20 +265,25 @@ def build_shared_camera(pp, E, OuterImp, GamePlayers, LocalPlayerCls, ViewportCl
                                             inst(E('GameViewportClient.ActiveSplitscreenType'))), 0))
     cond = andand(cond, native(OP_NOT_BOOL, boolvar(inst(E('PlayerController.bCinematicMode')))))
     cond = andand(cond, native(OP_EQ_OBJ, tok(0x17), gp_pc(0)))                                 # self
-    owns = native(OP_EQ_OBJ, context(local(found), OwnerP, inst(OwnerP)), gp_pc(1))
+    # DmC pawns are NTPawn -> NTAnimatedActor -> NTGameObject -> Actor (not Engine.Pawn), and the
+    # controller also owns its HUD and camera, so match both the owner and player 1's pawn class.
+    ClassP = find_import(pk, 'Core.Object.Class')
+    owns = andand(native(OP_EQ_OBJ, context(local(found), OwnerP, inst(OwnerP)), gp_pc(1)),
+                  native(OP_EQ_OBJ, context(local(found), ClassP, inst(ClassP)),
+                         context(final_call(get_p1), ClassP, inst(ClassP))))
     shift = native(OP_MUL_VEC_FLOAT, delta(), floatconst(0.5))
     pull = native(OP_MUL_VEC_FLOAT, native(OP_NORMAL, native(OP_SUB_VEC, outvar(out_loc), p1_loc())),
                   native(OP_MUL_FLOAT, native(OP_VSIZE, delta()), floatconst(SHARED_CAMERA_PULLBACK)))
     extra = assemble([
         ('jump_if_not', 'end', cond),
-        ('foreach', 'loop_end', native_ext(313, objconst(E('Pawn')), local(found), EMPTY)),
+        ('jump_if_not', 'end', native(0x77, final_call(get_p1), NONE)),        # player 1 pawn != None
+        ('foreach', 'loop_end', native_ext(313, objconst(E('Actor')), local(found), EMPTY)),
         ('jump_if_not', 'next', owns),
         ITER_POP, ('jump', 'found'),
         'next', ITER_NEXT,
         'loop_end', ITER_POP,
         ('jump', 'end'),                                                       # player 2 has no pawn
         'found',
-        ('jump_if_not', 'end', native(0x77, final_call(get_p1), NONE)),        # player 1 pawn != None
         let(outvar(out_loc), native(OP_ADD_VEC, native(OP_ADD_VEC, outvar(out_loc), shift), pull)),
         'end', RETURN_NOTHING, END], base=body_mem)
     script = Code(body, body_mem) + extra

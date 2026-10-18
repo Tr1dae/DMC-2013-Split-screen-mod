@@ -256,32 +256,63 @@ static void trace_result(DWORD fn, void *result)
             r ? obj_name(rd(r + OBJ_CLASS), b, sizeof b) : "", obj_name(r, c, sizeof c));
 }
 
-static int g_triggerIdx = -1, g_triggerScanned;
+/* Functions that start a trace, and how many calls to record after each. */
+static struct { const char *name; int max; int idx; } g_triggers[] = {
+    { TRACE_TRIGGER, TRACE_MAX, -1 },   /* F6: the join/spawn chain */
+    { "SplitAxis", 30000, -1 },         /* F7: a few frames of camera calls after the view changes */
+    { "RemovePlayer", 6000, -1 },       /* F8 */
+};
+#define NTRIGGERS (sizeof g_triggers / sizeof g_triggers[0])
+static int g_triggerScanned, g_viewPointIdx = -1;
 
 static void find_trigger_index(void)
 {
-    /* Called once the name table is populated; the trigger is a script function name. */
-    DWORD num = G(G_NAMES_NUM), i;
-    char buf[96];
+    /* Called once the name table is populated; triggers are script function names. */
+    DWORD num = G(G_NAMES_NUM), i, t;
+    char buf[160];
     g_triggerScanned = 1;
-    for (i = 0; i < num; i++)
-        if (!strcmp(name_of_index((int)i, buf, sizeof buf), TRACE_TRIGGER)) { g_triggerIdx = (int)i; break; }
-    sprintf_s(buf, sizeof buf, "tracer: '%s' is name %d (name table %d entries)", TRACE_TRIGGER, g_triggerIdx, (int)num);
-    logline(buf);
+    for (i = 0; i < num; i++) {
+        name_of_index((int)i, buf, sizeof buf);
+        for (t = 0; t < NTRIGGERS; t++) if (g_triggers[t].idx < 0 && !strcmp(buf, g_triggers[t].name)) g_triggers[t].idx = (int)i;
+        if (g_viewPointIdx < 0 && !strcmp(buf, "GetPlayerViewPoint")) g_viewPointIdx = (int)i;
+    }
+    for (t = 0; t < NTRIGGERS; t++) {
+        sprintf_s(buf, sizeof buf, "tracer: trigger '%s' is name %d", g_triggers[t].name, g_triggers[t].idx);
+        logline(buf);
+    }
 }
 
 static void maybe_start_trace(void *fn)
 {
     /* Exec commands (key bindings, console) arrive through ProcessEvent, script calls through
-       CallFunction, so both hooks check the trigger. */
+       CallFunction, so both hooks check the triggers. */
+    int idx, t;
     if (g_nameStrOff < 0) find_name_layout();
     if (g_nameStrOff >= 0 && !g_triggerScanned && G(G_NAMES_NUM) > 20000) find_trigger_index();
-    if (!g_trace && g_triggerIdx >= 0 && (int)rd((DWORD)fn + OBJ_NAME) == g_triggerIdx) {
-        if (!fopen_s(&g_trace, g_tracePath, "a") && g_trace) {
-            fprintf(g_trace, "==== trace start (%s) ====\n", TRACE_TRIGGER);
-            g_traceLeft = TRACE_MAX; g_depth = 0;
+    if (g_trace || !g_triggerScanned) return;
+    idx = (int)rd((DWORD)fn + OBJ_NAME);
+    for (t = 0; t < (int)NTRIGGERS; t++) {
+        if (g_triggers[t].idx >= 0 && idx == g_triggers[t].idx) {
+            if (!fopen_s(&g_trace, g_tracePath, "a") && g_trace) {
+                fprintf(g_trace, "==== trace start (%s) ====\n", g_triggers[t].name);
+                g_traceLeft = g_triggers[t].max; g_depth = 0;
+            }
+            return;
         }
     }
+}
+
+static void trace_viewpoint(DWORD self, DWORD fn, void *parms)
+{
+    /* GetPlayerViewPoint(out vector out_Location, out rotator out_Rotation): show the result. */
+    char a[96];
+    float *v = (float *)parms;
+    int *r = (int *)parms;
+    if (!g_trace || !parms || (int)rd(fn + OBJ_NAME) != g_viewPointIdx) return;
+    __try {
+        fprintf(g_trace, "%*s  -> view of %s: loc=(%.0f %.0f %.0f) rot=(%d %d %d)\n", g_depth * 2, "",
+                obj_name(self, a, sizeof a), v[0], v[1], v[2], r[3], r[4], r[5]);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 static void __fastcall hk_CallFunction(void *self, void *edx, void *stack, void *result, void *fn)
@@ -302,6 +333,7 @@ static void __fastcall hk_ProcessEvent(void *self, void *edx, void *fn, void *pa
     g_depth++;
     g_origPE(self, edx, fn, parms, result);
     g_depth--;
+    trace_viewpoint((DWORD)self, (DWORD)fn, parms);
     if (g_trace && g_depth == 0) fflush(g_trace);
 }
 
