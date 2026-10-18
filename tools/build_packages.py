@@ -177,7 +177,7 @@ def build_engine(src, dst):
         # Player 2 follows player 1 out of a cutscene (unless player 1 is still in one, e.g. paused
         # mid-cutscene), then regroups.
         ('jump_if_not', 'regroup_end', native(OP_GREATER_INT, cat(tok(0x36), gp(VC())), tok(0x26))),
-        ('jump_if_not', 'regroup_free', boolvar(context(inst(Outer), bCine, inst(bCine)))),
+        ('jump_if_not', 'regroup_free', context(inst(Outer), bCine, boolvar(inst(bCine)))),
         marker_cine, ('jump', 'regroup_end'),
         'regroup_free',
         set_cinematic(gp_pc(VC(), 1), False),
