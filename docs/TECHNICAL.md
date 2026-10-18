@@ -120,6 +120,15 @@ QLOC's PC port lets any pad drive player 1:
 - `tools/swf.py` (tag lister and AS2 disassembler) and `tools/as2.py` (assembler) do the SWF work.
   The movie's `RawData` array is rewritten and the export is appended at the end of the package.
 
+## Pauses and cutscenes
+
+- Joining while paused leaves the new pawn overlapping player 1 with nothing ticking, and the game
+  locks up. So while `WorldInfo.Pauser != None`, `AddPlayer`/`RemovePlayer` only record "join" or
+  "drop" in `CheatManager.ViewingFrom`, a localized string used only by the debug `ViewSelf` cheat.
+- `AddPlayer 200` carries out the recorded request and then regroups player 2 next to player 1 via
+  `Teleport`. `DVPlayerController.ResumeGame` and `DVPlayerController.SetCinematicMode(false)` run
+  it, so player 2 catches up after every pause, popup and cutscene.
+
 ## Diagnostics DLL (`native/`)
 
 - The game imports `XInputGetState`/`XInputSetState` (ordinals 2 and 3) from `xinput1_3.dll`, so a DLL

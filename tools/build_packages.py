@@ -122,15 +122,48 @@ def build_engine(src, dst):
     desired = lambda: vc_prop('GameViewportClient.DesiredSplitscreenType')
     active = lambda: vc_prop('GameViewportClient.ActiveSplitscreenType')
     layout = lambda: context(VC(), 0, virtual_call(pk, 'LayoutPlayers'))
+    OuterImp, GamePlayers = Outer, E('Engine.GamePlayers')
+
+    def gp(vc):
+        return context(context(vc, OuterImp, inst(OuterImp)), GamePlayers, inst(GamePlayers))
+
+    def gp_pc(vc, i):
+        return context(array_elem(tok(0x25 + i), gp(vc)), ActorP, inst(ActorP))            # IntZero / IntOne
+
     # DmC players own their pawn through NTPlayerController.m_NTPawn and never set Controller.Pawn,
     # so pawn work is done by DevilGame cheats run on player 2's own controller (see build_devilgame).
+    # Joining or dropping while the world is paused (e.g. from the pause menu) leaves the new pawn
+    # overlapping player 1 with nothing ticking, and the game locks up. While paused, AddPlayer and
+    # RemovePlayer only record the request in CheatManager.ViewingFrom (a localized message used by
+    # the debug ViewSelf cheat) and AddPlayer 200, which runs on resume, carries it out.
+    pending = inst(E('CheatManager.ViewingFrom'))
+    world = context(inst(Outer), E('Actor.WorldInfo'), inst(E('Actor.WorldInfo')))
+    paused = lambda: native(0x77, context(world, E('WorldInfo.Pauser'), inst(E('WorldInfo.Pauser'))), NONE)
+    str_eq = lambda a, s: native(0x7A, a, strconst(s))                                   # string ==
     script = assemble([
+        # AddPlayer 200: regroup only - bring player 2 (if any) next to player 1, never create.
+        # DevilGame runs this after every pause/popup closes and every cutscene ends.
+        ('jump_if_not', 'not_regroup', native(OP_EQ_INT, local(cid), raw([0x2C, 200]))),
+        ('jump_if_not', 'regroup_end', native(OP_NOT_BOOL, paused())),
+        ('jump_if_not', 'no_join', str_eq(pending, 'join')),
+        let(pending, strconst('')), console(inst(Outer), 'AddPlayer 1'),
+        'no_join',
+        ('jump_if_not', 'no_drop', str_eq(pending, 'drop')),
+        let(pending, strconst('')), console(inst(Outer), 'RemovePlayer'),
+        'no_drop',
+        ('jump_if_not', 'regroup_end', native(OP_GREATER_INT, cat(tok(0x36), gp(VC())), tok(0x26))),
+        console(gp_pc(VC(), 1), 'Teleport'),
+        'regroup_end', RETURN_NOTHING,
+        'not_regroup',
         # AddPlayer 100+n: set the split view directly (the pause menu's Camera option):
         # 101 top/bottom, 102 side by side, 106 shared screen.
         ('jump_if_not', 'not_view', native(0x99, local(cid), raw([0x2C, 100]))),          # >=
         let(desired(), cat(raw([0x38, 0x3D]), native(0x93, local(cid), raw([0x2C, 100])))),   # byte(cid - 100)
         layout(), RETURN_NOTHING,
         'not_view',
+        ('jump_if_not', 'running', paused()),
+        let(pending, strconst('join')), RETURN_NOTHING,
+        'running',
         # Join if this pad has no player yet; pressing it again just regroups.
         ('jump_if_not', 'joined', native(OP_EQ_OBJ, new_lp(), NONE)),
         create,
@@ -151,14 +184,10 @@ def build_engine(src, dst):
     # RemovePlayer (F8): despawn player 2's Dante via DevilGame's Despawn cheat on their own
     # controller, and show player 1 fullscreen. The controller stays logged in: destroying it would
     # run NTPlayerController.Destroyed, which clears the *global* in-game UI references.
-    OuterImp, GamePlayers = Outer, E('Engine.GamePlayers')
-
-    def gp(vc):
-        return context(context(vc, OuterImp, inst(OuterImp)), GamePlayers, inst(GamePlayers))
-
-    def gp_pc(vc, i):
-        return context(array_elem(tok(0x25 + i), gp(vc)), ActorP, inst(ActorP))            # IntZero / IntOne
     script = assemble([
+        ('jump_if_not', 'running', paused()),
+        let(pending, strconst('drop')), RETURN_NOTHING,
+        'running',
         ('jump_if_not', 'end', native(OP_GREATER_INT, cat(tok(0x36), gp(VC())), tok(0x26))),  # Length > 1
         console(gp_pc(VC(), 1), 'Despawn'),
         let(desired(), byteconst(DROPPED)),
@@ -307,6 +336,18 @@ def build_shared_camera(pp, E, OuterImp, GamePlayers, LocalPlayerCls, ViewportCl
     pp.replace_export_data(fn, build_function(pp.export_data(fn), script))
 
 
+def append_to_function(pp, path, items):
+    """Run `items` just before a function's final `return; END` (functions with one exit only)."""
+    from disasm import parse_function
+    fn = pp.export_index(path)
+    f = parse_function(pp.pkg, fn)
+    s = f['script']
+    assert s[-3:] == b'\x04\x0b\x53', (path, s[-3:].hex())
+    body_mem = f['bsize'] - 3
+    extra = assemble(items + [RETURN_NOTHING, END], base=body_mem)
+    pp.replace_export_data(fn, build_function(pp.export_data(fn), Code(s[:-3], body_mem) + extra))
+
+
 def build_devilgame(src, dst):
     pp = PatchedPackage(src, os.path.join(os.path.dirname(dst), '_scratch'))
     pk, E = pp.pkg, pp.export_index
@@ -384,6 +425,16 @@ def build_devilgame(src, dst):
         context(me(), 0, final_call(set_rot, context(p1(), rot, inst(rot)), EMPTY)),
         RETURN_NOTHING, END])
     repurpose_cheat(pp, 'LockScythe', 'Teleport', script, cls='DVExecFunctions')
+
+    # Catch player 2 up after anything that freezes or moves player 1: closing a pause menu or
+    # popup (DVPlayerController.ResumeGame) and the end of a cutscene (SetCinematicMode(false)).
+    # Both run ConsoleCommand("AddPlayer 200") on the controller, Engine's regroup-only form.
+    cc_ret = find_import(pk, 'Engine.PlayerController.ConsoleCommand.ReturnValue')
+    regroup = eat_return(cc_ret, virtual_call(pk, 'ConsoleCommand', strconst('AddPlayer 200'), EMPTY))
+    append_to_function(pp, 'DVPlayerController.ResumeGame', [regroup])
+    in_cine = E('DVPlayerController.SetCinematicMode.bInCinematicMode')
+    append_to_function(pp, 'DVPlayerController.SetCinematicMode',
+                       [('jump_if_not', 'done', native(0x81, boolvar(local(in_cine)))), regroup, 'done'])
     pp.save(dst)
     print('wrote', dst)
 

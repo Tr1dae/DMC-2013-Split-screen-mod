@@ -46,8 +46,10 @@ your own copy of the game.
 | **F10** | Force-clear a stuck pause (if the game freezes after a popup) |
 
 In the ESC pause menu, **SplitScreen Mod** (below Main Menu) opens a settings page:
-**Split Screen: On/Off** adds or drops player 2, and **Camera** switches between side by side,
-top & bottom and shared screen.
+**Split Screen: On/Off** adds or drops player 2 (applied when you resume), and **Camera** switches
+between side by side, top & bottom and shared screen. B/Back returns to the pause page.
+
+Player 2 is brought back next to player 1 after every cutscene, pause and popup.
 
 - Player 1 uses the first controller, plus keyboard and mouse.
 - Player 2 uses the second controller.

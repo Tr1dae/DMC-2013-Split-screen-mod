@@ -10,7 +10,9 @@ the class's DoInitAction that wraps Hook_InitAsMainGame and attaches extra CLIK 
       Camera: Side by Side / Top & Bottom / Shared Screen -> "AddPlayer 10<view>"
       Back
   * The buttons call the game's own ExecConsoleCommand UI callback
-    (DVGFxMovieHandler_IngameUI_Callbacks), which runs a console command on player 1.
+    (DVGFxMovieHandler_IngameUI_Callbacks), which runs a console command on player 1. Joining or
+    dropping while paused is only recorded by the Engine side and carried out on resume.
+  * B / Esc / Start on the SplitScreen Mod page returns to the pause page.
   * Menu state lives in _global.coopP2 / _global.coopView, which persist while the game runs.
 
 Usage: python build_ui.py <original Dante_Archetypes_SF.upk> <output upk>
@@ -135,6 +137,12 @@ def menu_code():
     code += method('onCoopBack', ['event'], sound + stmt(call_method(val(THIS), 'coopShow', False, True)))
     code += method('onCoopSplit', ['event'], split)
     code += method('onCoopCamera', ['event'], camera)
+    # B / Esc / Start on the SplitScreen Mod page goes back to the pause page instead of resuming.
+    code += set_member(proto(), 'coopOrigBack', member(proto(), 'BackButtonPressed'))
+    code += method('BackButtonPressed', [],
+                   if_not(eq(member(val(THIS), 'coopMode'), val(True)), 'stock') +
+                   stmt(call_method(val(THIS), 'coopShow', False, True)) + ret() +
+                   label('stock') + stmt(call_method(val(THIS), 'coopOrigBack')))
     code += label('installed')
     return assemble(code)
 
