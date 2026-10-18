@@ -42,8 +42,12 @@ works around the places where DmC and QLOC's PC port assume a single player.
   - calls `PostRestartPlayer`
 - The pawn spawns at the checkpoint's start point, where player 1 usually still stands. That is why
   the spawn ignores collision.
-- `AddPlayer` then moves the new pawn next to player 1, trying +X, -X, +Y, then above, and matches
-  player 1's rotation. Pressing F6 again just regroups.
+- DmC players own their body through `NTPlayerController.m_NTPawn`. `NTPossess` never calls the
+  engine's `Possess`, so `Controller.Pawn` stays empty. Pawn work therefore happens in DevilGame cheats
+  that run on player 2's own controller, through `ConsoleCommand`.
+- `AddPlayer` then runs `Teleport` (DevilGame, repurposed from `LockScythe`). It moves `m_NTPawn` next
+  to `NT_GetLocalPlayerPawn()` (player 1), trying +X, -X, +Y, then above, and matches player 1's
+  rotation. Pressing F6 again just regroups.
 
 ## Controller routing (exe)
 
@@ -79,6 +83,9 @@ QLOC's PC port lets any pad drive player 1:
 - Shared camera: code appended to `PlayerController.GetPlayerViewPoint`, after DmC's camera has set
   `out_Location`. It runs for player 1 when two players share one view and the game is not in
   cinematic mode:
+  - Player 1's pawn comes from `NT_GetLocalPlayerPawn()`. Player 2's is found with
+    `DynamicActors(class'Pawn')` as the pawn whose `Owner` is player 2's controller
+    (`NTPawn.PossessedBy` calls `SetOwner`).
   - It keeps the camera angle.
   - It moves the camera by half of the P1→P2 vector, so it centres on the midpoint.
   - It pulls the camera back along the camera→player-1 direction by `0.6 × distance`.
@@ -90,7 +97,8 @@ QLOC's PC port lets any pad drive player 1:
 - So F8 (`RemovePlayer`) keeps player 2 logged in. It:
   - runs `ConsoleCommand("Despawn")` on player 2's controller, which reaches DevilGame's cheat:
     `Outer.NTUnPossessAndDestroy()`
-  - switches to `SHARED_SCREEN`
+  - switches to `DROPPED` (7). This is the same single view as `SHARED_SCREEN`, but it tells F6 to
+    restore the split.
 - F6 (`AddPlayer`) finds player 2 without a pawn and runs `ConsoleCommand("RestartPlayer")`. That
   DevilGame cheat does the same `NTGameInfo_SP.RestartPlayer` + `PostRestartPlayer` as a mid-mission
   join. F6 then restores the split and regroups.

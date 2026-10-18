@@ -147,6 +147,14 @@ def andand(a, b):
     """a && b with short-circuit (the skip covers b and the closing EndFunctionParms)."""
     return cat(tok(0x82), a, tok(0x18), u16(b.mem + 1), b, tok(0x16))
 def floatconst(f): return tok(0x1E) + raw(struct.pack('<f', f))
+def objconst(i): return tok(0x20) + obj(i)
+def static_call(cls, ret_field, call):
+    """class'X'.static.F(...) from a class that is not an X (EX_ClassContext)."""
+    return cat(tok(0x12), objconst(cls), u16(call.mem), obj(ret_field), raw([0]), call)
+def native_ext(n, *args):
+    """Native function with index >= 0x100 (two-byte token)."""
+    return cat(raw([0x60 + (n >> 8), n & 0xFF]), *args, tok(0x16))
+ITER_NEXT, ITER_POP = tok(0x31), tok(0x30)
 
 
 def assemble(items, base=0):
@@ -155,7 +163,7 @@ def assemble(items, base=0):
     the first item lands inside the function (for code appended after existing bytecode)."""
     def size(it):
         if isinstance(it, str): return 0
-        if isinstance(it, tuple): return 3 + (it[2].mem if it[0] == 'jump_if_not' else 0)
+        if isinstance(it, tuple): return 3 + (it[2].mem if it[0] in ('jump_if_not', 'foreach') else 0)
         return it.mem
     labels, pos = {}, base
     for it in items:
@@ -165,8 +173,10 @@ def assemble(items, base=0):
     for it in items:
         if isinstance(it, str): continue
         if isinstance(it, tuple):
-            out = out + (jump_if_not(labels[it[1]], it[2]) if it[0] == 'jump_if_not'
-                         else cat(tok(0x06), u16(labels[it[1]])))
+            kind, label = it[0], labels[it[1]]
+            if kind == 'jump_if_not': out = out + jump_if_not(label, it[2])
+            elif kind == 'foreach': out = out + cat(tok(0x2F), it[2], u16(label))   # label = its IteratorPop
+            else: out = out + cat(tok(0x06), u16(label))
         else:
             out = out + it
     return out

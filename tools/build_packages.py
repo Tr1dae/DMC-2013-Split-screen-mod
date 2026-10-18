@@ -50,6 +50,8 @@ def repurpose_cheat(pp, old_name, new_name, script, cls='CheatManager'):
 # screen). eSST_MAX is never a real layout, so UpdateActiveSplitscreenType can tell it apart from
 # eSST_NONE, which still means "use the default 2-player split".
 SHARED_SCREEN = 6
+# Same single view, but player 2 was dropped with F8; F6 returns to the split from this one only.
+DROPPED = 7
 
 # UnrealScript native operator indices (Object.uc).
 OP_LESS_INT, OP_GREATER_INT, OP_EQ_INT, OP_NE_INT = 0x96, 0x97, 0x9A, 0x9B
@@ -120,24 +122,21 @@ def build_engine(src, dst):
     desired = lambda: vc_prop('GameViewportClient.DesiredSplitscreenType')
     active = lambda: vc_prop('GameViewportClient.ActiveSplitscreenType')
     layout = lambda: context(VC(), 0, virtual_call(pk, 'LayoutPlayers'))
+    # DmC players own their pawn through NTPlayerController.m_NTPawn and never set Controller.Pawn,
+    # so pawn work is done by DevilGame cheats run on player 2's own controller (see build_devilgame).
     script = assemble([
         # Join if this pad has no player yet; pressing it again just regroups.
         ('jump_if_not', 'joined', native(OP_EQ_OBJ, new_lp(), NONE)),
         create,
         'joined',
-        # Dropped with F8 (controller kept, Dante despawned)? Respawn through DevilGame's
-        # RestartPlayer cheat on that player's own controller, and go back to split screen.
-        ('jump_if_not', 'alive', native(OP_EQ_OBJ, new_pawn(), NONE)),
+        # Dropped with F8 (controller kept, Dante despawned)? RestartPlayer respawns them; it does
+        # nothing if they already have a pawn. Then leave the dropped single view.
         console(new_pc(), 'RestartPlayer'),
+        ('jump_if_not', 'not_dropped', int_eq_byte(desired(), DROPPED)),
         let(desired(), byteconst(0)),
-        'alive',
-        # Spawn starts are often far away or in unloaded level chunks: put them next to us.
-        ('jump_if_not', 'placed', native(OP_NOT_BOOL, try_place(120, 0, 0))),
-        ('jump_if_not', 'placed', native(OP_NOT_BOOL, try_place(-120, 0, 0))),
-        ('jump_if_not', 'placed', native(OP_NOT_BOOL, try_place(0, 120, 0))),
-        try_place(0, 0, 150),
-        'placed',
-        face_pawn,
+        'not_dropped',
+        # Spawn starts are often far away or in unloaded level chunks: put them next to player 1.
+        console(new_pc(), 'Teleport'),
         face_pc,
         layout(),
         RETURN_NOTHING, END])
@@ -156,7 +155,7 @@ def build_engine(src, dst):
     script = assemble([
         ('jump_if_not', 'end', native(OP_GREATER_INT, cat(tok(0x36), gp(VC())), tok(0x26))),  # Length > 1
         console(gp_pc(VC(), 1), 'Despawn'),
-        let(desired(), byteconst(SHARED_SCREEN)),
+        let(desired(), byteconst(DROPPED)),
         layout(),
         'end', RETURN_NOTHING, END])
     repurpose_cheat(pp, 'DebugPause', 'RemovePlayer', script)
@@ -188,8 +187,8 @@ def build_engine(src, dst):
         set_st(byteconst(0)), ('jump', 'done'),
         'many',
         ('jump_if_not', 'not2', native(OP_EQ_INT, n(), two)),
-        ('jump_if_not', 'not_shared', int_eq_byte(local(st), SHARED_SCREEN)),
-        set_st(byteconst(0)), ('jump', 'done'),
+        ('jump_if_not', 'not_shared', native(OP_GREATER_INT, byte_to_int(local(st)), byte_to_int(byteconst(5)))),
+        set_st(byteconst(0)), ('jump', 'done'),                                  # SHARED_SCREEN or DROPPED
         'not_shared',
         ('jump_if_not', 'done', andand(int_ne_byte(local(st), 1), int_ne_byte(local(st), 2))),
         set_st(inst(E('GameViewportClient.Default2PSplitType'))), ('jump', 'done'),
@@ -222,14 +221,18 @@ SHARED_CAMERA_PULLBACK = 0.6   # extra camera distance per unit of distance betw
 def build_shared_camera(pp, E, OuterImp, GamePlayers, LocalPlayerCls, ViewportClient, Player,
                         PawnP, LocationP, ActorP):
     """Shared screen camera, appended to PlayerController.GetPlayerViewPoint (after DmC's camera
-    has produced out_Location):
+    has produced out_Location). ULocalPlayer::CalcSceneView renders from this event.
 
         if (VC.Outer.GamePlayers.Length >= 2 && VC.ActiveSplitscreenType == eSST_NONE
-            && !bCinematicMode && self == GamePlayers[0].Actor
-            && Pawn != None && GamePlayers[1].Actor.Pawn != None)
+            && !bCinematicMode && self == GamePlayers[0].Actor)
         {
-            D = P2.Location - Pawn.Location;
-            out_Location += D * 0.5 + Normal(out_Location - Pawn.Location) * (VSize(D) * PULLBACK);
+            // DmC pawns are owned by their controller (NTPawn.PossessedBy -> SetOwner) but
+            // Controller.Pawn is never set, so look player 2's pawn up by owner.
+            foreach DynamicActors(class'Pawn', TheViewTarget)
+                if (TheViewTarget.Owner == GamePlayers[1].Actor) break;   // (found)
+            P1 = NT_GetLocalPlayerPawn();
+            D = P2.Location - P1.Location;
+            out_Location += D * 0.5 + Normal(out_Location - P1.Location) * (VSize(D) * PULLBACK);
         }
 
     i.e. keep player 1's camera angle, move it to the midpoint of both players and pull it back as
@@ -237,32 +240,43 @@ def build_shared_camera(pp, E, OuterImp, GamePlayers, LocalPlayerCls, ViewportCl
     pk = pp.pkg
     fn = E('PlayerController.GetPlayerViewPoint')
     out_loc = E('PlayerController.GetPlayerViewPoint.out_Location')
+    found = E('PlayerController.GetPlayerViewPoint.TheViewTarget')    # Actor local, unused by now
     from disasm import parse_function
     f = parse_function(pk, fn)
     s = f['script']
     assert s[-3:] == b'\x04\x0b\x53', s[-3:].hex()
     body = s[:-3]
     body_mem = f['bsize'] - 3
+    dyn = E('Actor.DynamicActors')
+    assert parse_function(pk, dyn)['inative'] == 313
+    get_p1 = E('Actor.NT_GetLocalPlayerPawn')
+    OwnerP = E('Actor.Owner')
 
     vc = context(dyncast(LocalPlayerCls, inst(Player)), ViewportClient, inst(ViewportClient))
     gp = lambda: context(context(vc, OuterImp, inst(OuterImp)), GamePlayers, inst(GamePlayers))
     gp_pc = lambda i: context(array_elem(tok(0x25 + i), gp()), ActorP, inst(ActorP))
-    my_loc = lambda: context(inst(PawnP), LocationP, inst(LocationP))
-    p2_pawn = lambda: context(gp_pc(1), PawnP, inst(PawnP))
-    delta = lambda: native(OP_SUB_VEC, context(p2_pawn(), LocationP, inst(LocationP)), my_loc())
+    p1_loc = lambda: context(final_call(get_p1), LocationP, inst(LocationP))
+    delta = lambda: native(OP_SUB_VEC, context(local(found), LocationP, inst(LocationP)), p1_loc())
 
     cond = native(0x99, cat(tok(0x36), gp()), raw([0x2C, 2]))                                   # Length >= 2
     cond = andand(cond, int_eq_byte(context(vc, E('GameViewportClient.ActiveSplitscreenType'),
                                             inst(E('GameViewportClient.ActiveSplitscreenType'))), 0))
     cond = andand(cond, native(OP_NOT_BOOL, boolvar(inst(E('PlayerController.bCinematicMode')))))
     cond = andand(cond, native(OP_EQ_OBJ, tok(0x17), gp_pc(0)))                                 # self
-    cond = andand(cond, native(0x77, inst(PawnP), NONE))                                        # !=
-    cond = andand(cond, native(0x77, p2_pawn(), NONE))
+    owns = native(OP_EQ_OBJ, context(local(found), OwnerP, inst(OwnerP)), gp_pc(1))
     shift = native(OP_MUL_VEC_FLOAT, delta(), floatconst(0.5))
-    pull = native(OP_MUL_VEC_FLOAT, native(OP_NORMAL, native(OP_SUB_VEC, outvar(out_loc), my_loc())),
+    pull = native(OP_MUL_VEC_FLOAT, native(OP_NORMAL, native(OP_SUB_VEC, outvar(out_loc), p1_loc())),
                   native(OP_MUL_FLOAT, native(OP_VSIZE, delta()), floatconst(SHARED_CAMERA_PULLBACK)))
     extra = assemble([
         ('jump_if_not', 'end', cond),
+        ('foreach', 'loop_end', native_ext(313, objconst(E('Pawn')), local(found), EMPTY)),
+        ('jump_if_not', 'next', owns),
+        ITER_POP, ('jump', 'found'),
+        'next', ITER_NEXT,
+        'loop_end', ITER_POP,
+        ('jump', 'end'),                                                       # player 2 has no pawn
+        'found',
+        ('jump_if_not', 'end', native(0x77, final_call(get_p1), NONE)),        # player 1 pawn != None
         let(outvar(out_loc), native(OP_ADD_VEC, native(OP_ADD_VEC, outvar(out_loc), shift), pull)),
         'end', RETURN_NOTHING, END], base=body_mem)
     script = Code(body, body_mem) + extra
@@ -322,6 +336,30 @@ def build_devilgame(src, dst):
         context(inst(outer), 0, virtual_call(pk, 'PostRestartPlayer')),
         'end', RETURN_NOTHING, END])
     repurpose_cheat(pp, 'LockSpiralTrap', 'RestartPlayer', script, cls='DVExecFunctions')
+
+    # Teleport: move this player's pawn next to player 1's (spawn starts are often far away or in
+    # unloaded level chunks), trying +X, -X, +Y and then above, and match player 1's facing.
+    #   P1 = class'Actor'.static.NT_GetLocalPlayerPawn();  P = NTPlayerController(Outer).m_NTPawn;
+    #   if (!P.SetLocation(P1.Location + vect(120,0,0))) if (...) ...;  P.SetRotation(P1.Rotation);
+    actor_cls = find_import(pk, 'Engine.Actor')
+    get_p1 = find_import(pk, 'Engine.Actor.NT_GetLocalPlayerPawn')
+    loc, rot = find_import(pk, 'Engine.Actor.Location'), find_import(pk, 'Engine.Actor.Rotation')
+    set_loc, set_rot = find_import(pk, 'Engine.Actor.SetLocation'), find_import(pk, 'Engine.Actor.SetRotation')
+    p1 = lambda: static_call(actor_cls, 0, final_call(get_p1))
+    me = lambda: context(dyncast(ntpc, inst(outer)), nt_pawn, inst(nt_pawn))
+
+    def try_place(dx, dy, dz):
+        dest = native(0xD7, context(p1(), loc, inst(loc)), vect(dx, dy, dz))                 # vector +
+        return context(me(), 0, final_call(set_loc, dest, EMPTY))
+    script = assemble([
+        ('jump_if_not', 'placed', native(0x81, try_place(120, 0, 0))),                       # !
+        ('jump_if_not', 'placed', native(0x81, try_place(-120, 0, 0))),
+        ('jump_if_not', 'placed', native(0x81, try_place(0, 120, 0))),
+        try_place(0, 0, 150),
+        'placed',
+        context(me(), 0, final_call(set_rot, context(p1(), rot, inst(rot)), EMPTY)),
+        RETURN_NOTHING, END])
+    repurpose_cheat(pp, 'LockScythe', 'Teleport', script, cls='DVExecFunctions')
     pp.save(dst)
     print('wrote', dst)
 
