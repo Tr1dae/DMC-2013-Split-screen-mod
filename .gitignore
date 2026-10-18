@@ -1,0 +1,19 @@
+# Game files and anything derived from them (never commit)
+backup/
+build/
+work/
+releases/
+*.upk
+*.exe
+*.dll
+
+# Runtime logs
+coop_log.txt
+coop_trace.txt
+
+# Build/tool artifacts
+__pycache__/
+*.pyc
+*.obj
+*.exp
+*.lib
